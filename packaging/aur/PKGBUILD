@@ -1,0 +1,48 @@
+# Maintainer: sfmqrb <45316558+sfmqrb@users.noreply.github.com>
+pkgname=focus-track
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="See where your time goes on Hyprland: tracks the focused app, with a btop-style terminal dashboard"
+arch=('x86_64' 'aarch64')
+url="https://github.com/sfmqrb/focus-track"
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'sqlite')
+makedepends=('cargo')
+optdepends=('libpulse: count playing video and calls as "watching" (pactl)'
+            'xdg-utils: open pages in the browser from the dashboard'
+            'libnotify: the end-of-day summary notification')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('497db27ecc46d7365df7df62e9cf9845858014413295015e13a2220e49a40136')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # link the system libsqlite3 instead of compiling a bundled copy
+  cargo build --frozen --release --no-default-features
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --no-default-features
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  local bin=target/release/focus-track
+  install -Dm755 "$bin" "$pkgdir/usr/bin/focus-track"
+  install -Dm644 extras/focus-track.service "$pkgdir/usr/lib/systemd/user/focus-track.service"
+  install -Dm644 extras/omarchy/focus.qml "$pkgdir/usr/share/$pkgname/omarchy/focus.qml"
+  install -Dm644 README.md SECURITY.md -t "$pkgdir/usr/share/doc/$pkgname/"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  "$bin" completions bash | install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/focus-track"
+  "$bin" completions zsh | install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_focus-track"
+  "$bin" completions fish | install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/focus-track.fish"
+}
