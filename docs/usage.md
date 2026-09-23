@@ -12,6 +12,7 @@
 | `focus-track apps` | every window class seen, its name and category |
 | `focus-track doctor` | is recording working? |
 | `focus-track export` | CSV of everything (`--json` works on most views) |
+| `focus-track backup` | a verified copy of your data, now (also automatic, daily) |
 
 Useful flags: `-d 2026-09-20` another day, `-D 30` more days, `-c` group by category, `-g 5` daily goal in hours.
 `focus-track --help` lists everything; `focus-track completions <shell>` prints shell completions.
@@ -41,6 +42,23 @@ Each symbol means one thing everywhere:
 | `⣀⣤⣶⣿` | a trend through the day |
 | highlighted row | the selection |
 | `▲ ▼ –` | more / less / about your usual by this time of day |
+
+## Backups
+
+Your data is never deleted. On top of that, the recorder makes a verified copy of the database once a day in
+`~/.local/share/focus-track/backups/`: every day for two weeks, one per week for eight weeks, and one per month
+forever. `focus-track backup` makes one now; `focus-track doctor` warns if backups stop.
+
+To restore one, stop the recorder and copy it back:
+
+```sh
+systemctl --user stop focus-track          # or: pkill -f 'focus-track daemon'
+cp ~/.local/share/focus-track/backups/focus-track-2026-09-23.db ~/.local/state/focus-track.db
+systemctl --user start focus-track
+```
+
+These copies live on the same disk. To survive a dead disk too, include `~/.local/share/focus-track/backups/`
+in whatever backs up your home folder.
 
 ## What counts
 

@@ -1,5 +1,6 @@
 //! focus-track: see where your time goes on Hyprland.
 
+mod backup;
 mod config;
 mod dashboard;
 mod doctor;
@@ -41,6 +42,8 @@ enum Cmd {
     Doctor,
     /// Print the config file path (creates a commented starter file if missing)
     Config,
+    /// Back up the database now (the recorder also does it once a day)
+    Backup,
     /// Send the end-of-day notification now
     Summary,
     /// CSV of every span (all data, or a --days/--date range)
@@ -164,6 +167,19 @@ fn main() -> anyhow::Result<()> {
     match a.command {
         Cmd::Widget => println!("{}", views::widget_json(&st)),
         Cmd::Summary => track::send_summary(&st),
+        Cmd::Backup => {
+            let dir = backup::dir();
+            let file = backup::make(&st.con, &dir, today())?;
+            let all = backup::list(&dir);
+            let size: u64 = all.iter().filter_map(|(_, p)| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+            println!("backed up to {} (integrity checked)", file.display());
+            println!(
+                "{} backups, {:.1} MB, oldest {}  (kept: daily for 2 weeks, weekly for 8 weeks, monthly forever)",
+                all.len(),
+                size as f64 / 1e6,
+                all.first().map_or_else(String::new, |x| x.0.to_string())
+            );
+        }
         Cmd::Bar => {
             let (s, e) = day_bounds(today());
             let t = totals(&st.by_group(s, e));

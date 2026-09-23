@@ -361,6 +361,8 @@ pub struct Tracker<'a, P: Probe> {
     urls: HashMap<(String, String), String>, // confirmed page titles
     pending: Vec<(i64, What, f64)>,          // rows whose title waits for history
     pub summary: bool,
+    pub backups: bool,
+    backup_tried: f64,
 }
 
 impl<'a, P: Probe> Tracker<'a, P> {
@@ -379,6 +381,8 @@ impl<'a, P: Probe> Tracker<'a, P> {
             urls: HashMap::new(),
             pending: Vec::new(),
             summary: false,
+            backups: false,
+            backup_tried: 0.0,
         }
     }
 
@@ -493,6 +497,13 @@ impl<'a, P: Probe> Tracker<'a, P> {
                 send_summary(&st);
             }
         }
+        // once a day (retried hourly if it fails): a verified copy of the database
+        if self.backups && t - self.backup_tried >= 3600.0 && crate::backup::due(&crate::backup::dir()) {
+            self.backup_tried = t;
+            if let Err(e) = crate::backup::make(self.con, &crate::backup::dir(), today()) {
+                eprintln!("focus-track: backup failed: {e:#}");
+            }
+        }
     }
 }
 
@@ -541,6 +552,7 @@ pub fn daemon() -> anyhow::Result<()> {
     resolve_backlog(&st.con, &System);
     let mut t = Tracker::new(&st.con, System);
     t.summary = true;
+    t.backups = true;
     loop {
         if let Some(sock) = hypr_socket().and_then(|p| UnixStream::connect(p).ok()) {
             let _ = sock.set_read_timeout(Some(Duration::from_secs_f64(TICK)));

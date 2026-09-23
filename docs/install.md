@@ -68,5 +68,5 @@ A small ring of today's apps (or categories) with a dot that breathes while you'
 ```sh
 systemctl --user disable --now focus-track
 rm ~/.local/bin/focus-track ~/.config/systemd/user/focus-track.service   # Arch package: pacman -R focus-track
-rm -r ~/.local/state/focus-track.db* ~/.cache/focus-track ~/.config/focus-track   # your data and config
+rm -r ~/.local/state/focus-track.db* ~/.cache/focus-track ~/.local/share/focus-track ~/.config/focus-track   # your data, backups and config
 ```

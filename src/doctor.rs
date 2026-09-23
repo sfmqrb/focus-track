@@ -226,6 +226,27 @@ pub fn doctor_lines(st: &Store) -> (Vec<String>, bool) {
         .con
         .query_row("SELECT count(*), min(ts) FROM focus", [], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap_or((0, None));
+    let dir = crate::backup::dir();
+    let backups = crate::backup::list(&dir);
+    match backups.last() {
+        None => say(
+            &warn,
+            "no backups yet".into(),
+            "the recorder makes one daily; or run: focus-track backup".into(),
+        ),
+        Some((newest, _)) => {
+            let age = (today() - *newest).num_days();
+            say(
+                if age > 2 { &warn } else { &ok },
+                format!(
+                    "backups: {}, newest {}",
+                    backups.len(),
+                    if age == 0 { "today".to_string() } else { format!("{age} days ago") }
+                ),
+                dir.display().to_string(),
+            );
+        }
+    }
     let size = std::fs::metadata(&st.path).map(|m| m.len()).unwrap_or(0);
     let since = first_ts
         .map(|f| format!(", since {}", local(f).format("%d %b %Y")))

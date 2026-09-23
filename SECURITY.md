@@ -10,11 +10,12 @@ Everything stays on your machine. focus-track has no network code at all.
 | URL of a browser page | same database | only once the exact page title is found in your browser's own history |
 | temporary copies of browser history databases | `~/.cache/focus-track/` (dir `0700`, files `0600`) | browsers keep their history locked, so it is copied to be read |
 | your config | `~/.config/focus-track/config.toml` | names and categories, written by you |
+| daily backups of the database | `~/.local/share/focus-track/backups/` (dir `0700`, files `0600`) | so the data can't be lost; nothing is ever deleted from it except old backup copies |
 
 **Private / incognito windows are never stored.** Their pages are not in browser history, so their titles
 are only held in memory and dropped after five minutes; the time still counts, with no title or URL.
 
-Delete everything: `rm -r ~/.local/state/focus-track.db* ~/.cache/focus-track`.
+Delete everything: `rm -r ~/.local/state/focus-track.db* ~/.cache/focus-track ~/.local/share/focus-track`.
 
 ## What it runs
 

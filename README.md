@@ -8,6 +8,7 @@ btop-style dashboard shows your day. Everything stays on your machine.
 - **Counts only real time**: idle, locked and suspended time is skipped; a playing video or call counts as *watching*.
 - **Pages, privately**: time per website with its URL. Private/incognito windows are never recorded.
 - **Your categories**: work, media, chat… by rules you write. No AI, no network, ever.
+- **Kept safe**: nothing is ever deleted, and a verified backup is made every day.
 
 ## Install
 
