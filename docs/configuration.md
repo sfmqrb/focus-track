@@ -20,6 +20,11 @@ apps  = ["mpv"]
 sites = ["youtube.com"]
 ```
 
+Web apps (Omarchy's Discord, WhatsApp, and so on) are named after their site automatically: `chrome-discord.com__…`
+shows as **Discord**, `chrome-mail.example.org__…` as **Example Mail**, and different browser profiles are merged. Your
+`[names]` rules still win. Their site also counts for `sites`, so `sites = ["discord.com"]` catches the Discord app too.
+Unread counters in titles, like `(230) Discord | Friends`, are ignored so one page isn't split into many rows.
+
 How time gets a category:
 
 1. Browser time on a page whose domain is in some category's `sites` (subdomains included) → that category.

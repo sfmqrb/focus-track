@@ -2,7 +2,7 @@
 
 use crate::render::{DOT, EMPTY, app_code, braille_colored, color, dim, fit, highlight, legend_lines, link, meter, paint, theme, vlen};
 use crate::store::{Group, Row, Span, Store, daemon_running, merged, sum, switches, totals};
-use crate::track::{PRIVATE, is_browser};
+use crate::track::{PRIVATE, is_browser, without_count};
 use crate::util::{day_bounds, days_before, fmt, hhmm, local, now, rhe, today};
 use chrono::{NaiveDate, Timelike};
 use std::collections::HashMap;
@@ -541,7 +541,7 @@ pub fn window_key(st: &Store, group: &str, r: &Row) -> String {
         return String::new();
     }
     let label = if !r.title.is_empty() {
-        r.title.to_string()
+        without_count(r.title)
     } else if is_browser(r.app) {
         PRIVATE.into()
     } else {
@@ -556,7 +556,7 @@ pub fn window_key(st: &Store, group: &str, r: &Row) -> String {
 
 pub fn page_key(r: &Row) -> String {
     if !r.url.is_empty() {
-        format!("{}\t{}", r.url, r.title)
+        format!("{}\t{}", r.url, without_count(r.title))
     } else if is_browser(r.app) {
         format!("\t{PRIVATE}")
     } else {

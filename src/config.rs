@@ -123,18 +123,22 @@ impl Config {
         if let Some(n) = self.name_cache.borrow().get(app) {
             return n.clone();
         }
-        let n = self
-            .names
-            .iter()
-            .find(|(p, _)| glob_match(p, app))
-            .map_or_else(|| short(app), |(_, n)| n.clone());
+        let n = self.names.iter().find(|(p, _)| glob_match(p, app)).map_or_else(
+            || webapp_host(app).map_or_else(|| short(app), |h| webapp_name(&h)),
+            |(_, n)| n.clone(),
+        );
         self.name_cache.borrow_mut().insert(app.to_string(), n.clone());
         n
     }
 
     /// Category for time in `app` (on page `url`, for browsers). Sites win over apps; default "other".
     pub fn category_of(&self, app: &str, url: &str) -> String {
-        let h = host(url);
+        // a web app has no page URL of its own, but its window class names its site
+        let h = if url.is_empty() {
+            webapp_host(app).unwrap_or_default()
+        } else {
+            host(url)
+        };
         let key = (app.to_string(), h.clone());
         if let Some(c) = self.cat_cache.borrow().get(&key) {
             return c.clone();
@@ -187,6 +191,47 @@ pub fn glob_match(pattern: &str, s: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
+}
+
+/// The site of a Chromium app-mode window (Omarchy web apps): `chrome-discord.com__channels_@me-Default` -> `discord.com`.
+pub fn webapp_host(app: &str) -> Option<String> {
+    let rest = ["chrome-", "brave-", "msedge-"].iter().find_map(|p| app.strip_prefix(p))?;
+    let (host, _) = rest.split_once("__")?;
+    let valid = host.contains('.') && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    valid.then(|| host.to_lowercase())
+}
+
+/// A readable name for a site: discord.com -> Discord, web.whatsapp.com -> WhatsApp, mail.example.org -> Example Mail.
+pub fn webapp_name(host: &str) -> String {
+    let mut labels: Vec<&str> = host.split('.').collect();
+    let n = labels.len();
+    if n > 2 && labels[n - 1].len() == 2 && ["co", "com", "org", "net", "ac", "gov"].contains(&labels[n - 2]) {
+        labels.pop(); // co.uk, com.au
+    }
+    if labels.len() > 1 {
+        labels.pop(); // the TLD
+    }
+    while labels.len() > 1 && ["www", "web", "app", "m"].contains(&labels[0]) {
+        labels.remove(0);
+    }
+    labels.reverse(); // mail.example -> Example Mail
+    labels.iter().map(|l| brand(l)).collect::<Vec<_>>().join(" ")
+}
+
+fn brand(label: &str) -> String {
+    match label {
+        "whatsapp" => "WhatsApp".into(),
+        "youtube" => "YouTube".into(),
+        "github" => "GitHub".into(),
+        "chatgpt" => "ChatGPT".into(),
+        "linkedin" => "LinkedIn".into(),
+        "openai" => "OpenAI".into(),
+        _ => {
+            let mut c = label.chars();
+            c.next()
+                .map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+        }
+    }
 }
 
 /// com.mitchellh.ghostty -> ghostty, org.telegram.desktop -> telegram
@@ -260,5 +305,45 @@ mod tests {
         assert_eq!(short("org.telegram.desktop"), "telegram");
         assert_eq!(host("https://www.YouTube.com:443/x"), "youtube.com");
         assert_eq!(host(""), "");
+    }
+
+    #[test]
+    fn web_apps_get_the_name_of_their_site() {
+        for (class, host, name) in [
+            ("chrome-discord.com__channels_@me-Default", "discord.com", "Discord"),
+            ("chrome-discord.com__channels_@me-Profile_1", "discord.com", "Discord"),
+            ("chrome-web.whatsapp.com__-Default", "web.whatsapp.com", "WhatsApp"),
+            ("brave-mail.example.org__u_0_inbox-Default", "mail.example.org", "Example Mail"),
+            ("chrome-docs.google.com__document-Default", "docs.google.com", "Google Docs"),
+            ("chrome-www.bbc.co.uk__news-Default", "www.bbc.co.uk", "Bbc"),
+            ("chrome-x.com__home-Default", "x.com", "X"),
+            ("chrome-chatgpt.com__-Default", "chatgpt.com", "ChatGPT"),
+        ] {
+            assert_eq!(webapp_host(class).as_deref(), Some(host), "{class}");
+            assert_eq!(webapp_name(host), name, "{class}");
+        }
+        for not_a_webapp in [
+            "chromium",
+            "brave-browser",
+            "chrome-extension",
+            "com.mitchellh.ghostty",
+            "chrome-nodot__x-Default",
+            "chrome-__x",
+        ] {
+            assert_eq!(webapp_host(not_a_webapp), None, "{not_a_webapp}");
+        }
+        let cfg = Config::from_str("[names]\n\"chrome-discord.com*\" = \"Chat\"\n[categories.chat]\nsites = [\"discord.com\"]\n[categories.web]\napps = [\"WhatsApp\"]").unwrap();
+        assert_eq!(cfg.name_of("chrome-discord.com__x-Default"), "Chat", "your own rename wins");
+        assert_eq!(cfg.name_of("chrome-web.whatsapp.com__-Default"), "WhatsApp");
+        assert_eq!(
+            cfg.category_of("chrome-discord.com__x-Default", ""),
+            "chat",
+            "the site in the class counts as a `sites` match"
+        );
+        assert_eq!(
+            cfg.category_of("chrome-web.whatsapp.com__-Default", ""),
+            "web",
+            "and the derived name as an `apps` match"
+        );
     }
 }

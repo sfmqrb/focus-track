@@ -36,7 +36,7 @@ const T5: Duration = Duration::from_secs(5);
 
 pub fn is_browser(app: &str) -> bool {
     let a = app.to_lowercase();
-    BROWSERS.iter().any(|(b, _)| *b == a) || app.starts_with("chrome-")
+    BROWSERS.iter().any(|(b, _)| *b == a) || app.starts_with("chrome-") || crate::config::webapp_host(app).is_some()
 }
 
 /// Drop leading spinner/status glyphs (Claude Code's ◐, CLI braille spinners) and the trailing browser name.
@@ -290,6 +290,12 @@ fn strip_count(t: &str) -> Option<&str> {
     (close > 0 && rest[..close].chars().all(|c| c.is_ascii_digit())).then(|| rest[close + 1..].trim_start())
 }
 
+/// A title without its unread counter, for showing: "(230) Discord | Friends" -> "Discord | Friends", so a
+/// counter that ticks up doesn't split one page into many rows.
+pub fn without_count(t: &str) -> String {
+    strip_count(t).unwrap_or(t).to_string()
+}
+
 /// URL of the most recent history entry with this exact page title, or "" (private windows never have one).
 pub fn lookup_url(app: &str, title: &str) -> String {
     if title.is_empty() || !is_browser(app) {
@@ -297,6 +303,8 @@ pub fn lookup_url(app: &str, title: &str) -> String {
     }
     let key = if app.starts_with("chrome-") {
         "chromium".to_string()
+    } else if app.starts_with("brave-") && crate::config::webapp_host(app).is_some() {
+        "brave-browser".to_string() // a Brave web app keeps its history in Brave's profile
     } else {
         app.to_lowercase()
     };
@@ -646,6 +654,11 @@ mod tests {
         assert_eq!(clean_title("evil\x1b]8;;x\x07 title"), "evil]8;;x title");
         assert_eq!(strip_count("(3) Inbox"), Some("Inbox"));
         assert_eq!(strip_count("(a) Inbox"), None);
+        assert_eq!(without_count("(230) Discord | Friends"), "Discord | Friends");
+        assert_eq!(without_count("Discord | (3) Friends"), "Discord | (3) Friends");
+        assert_eq!(without_count("(x)"), "(x)");
+        assert!(is_browser("chrome-discord.com__channels_@me-Default") && is_browser("brave-discord.com__-Default"));
+        assert!(!is_browser("discord") && !is_browser("com.mitchellh.ghostty"));
     }
 
     #[test]
