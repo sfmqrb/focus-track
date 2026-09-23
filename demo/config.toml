@@ -5,17 +5,22 @@
 "org.gnome.Nautilus" = "Files"
 "code" = "VS Code"
 "firefox" = "Firefox"
+"discord" = "Discord"
+"postman" = "Postman"
 
 [categories.work]
-apps = ["Terminal", "VS Code", "obsidian"]
+apps = ["Terminal", "VS Code", "obsidian", "postman"]
 sites = ["doc.rust-lang.org", "docs.rs", "github.com", "wiki.hypr.land", "stackoverflow.com"]
+
+[categories.learning]
+sites = ["en.wikipedia.org", "developer.mozilla.org"]
 
 [categories.media]
 apps = ["mpv", "spotify"]
 sites = ["youtube.com"]
 
 [categories.chat]
-apps = ["Telegram", "slack", "zoom"]
+apps = ["Telegram", "slack", "zoom", "discord"]
 
 [categories.news]
-sites = ["news.ycombinator.com", "reddit.com"]
+sites = ["news.ycombinator.com", "reddit.com", "bbc.com"]

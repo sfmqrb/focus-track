@@ -7,7 +7,7 @@ Render it with agg (https://github.com/asciinema/agg). See demo/README.md.
 """
 import codecs, fcntl, json, os, select, struct, subprocess, sys, termios, time
 
-W, H = 112, 36
+W, H = 156, 46
 binary, db, out = sys.argv[1:4]
 day = sys.argv[4:5]  # a full day looks better than a morning
 here = os.path.dirname(os.path.abspath(__file__))
@@ -50,26 +50,37 @@ def key(k, wait=0.7):
     pump(wait)
 
 
-UP, DOWN, ESC, ENTER, LEFT, RIGHT = b"\x1b[A", b"\x1b[B", b"\x1b", b"\r", b"\x1b[D", b"\x1b[C"
-pump(2.8)                                   # the overview
-key(DOWN), key(DOWN, 1.0)                   # select apps
-key(ENTER, 2.6)                             # open one: its windows and when it was used
-key(DOWN), key(DOWN, 1.2)
-key(ESC, 1.2)
-key(b"4", 2.4)                              # zoom the minute-by-minute timeline
+UP, DOWN, ESC, ENTER, LEFT, RIGHT, HOME, END = (
+    b"\x1b[A", b"\x1b[B", b"\x1b", b"\r", b"\x1b[D", b"\x1b[C", b"\x1b[H", b"\x1b[F",
+)
+pump(2.6)                                   # the overview: today, streaks, activity, timeline, week, heatmap
+key(DOWN), key(DOWN, 0.5), key(DOWN, 0.6)   # move the selection down the app list
+key(END, 0.7), key(HOME, 0.7)               # jump to the last / first item
+key(DOWN), key(DOWN, 1.0)
+key(ENTER, 2.4)                             # open one: its windows and when it was used
+key(DOWN), key(DOWN), key(DOWN, 1.2)        # scroll its windows
 key(ESC, 1.0)
-key(b"p", 2.0)                              # pages, with their URLs
-key(DOWN, 0.5), key(DOWN, 0.5), key(DOWN, 1.4)
+key(b"4", 2.2)                              # zoom the minute-by-minute timeline
+key(ESC, 0.9)
+key(b"5", 2.0)                              # zoom the week
+key(ESC, 0.9)
+key(b"6", 2.2)                              # zoom the heatmap: a month of history
 key(ESC, 1.0)
-key(b"c", 2.8)                              # group by category
-key(b"g", 2.2)                              # activity graph: time per app
-key(b"g", 0.6), key(b"c", 1.0)
-key(LEFT, 1.6)                              # the day before
-key(RIGHT, 1.0)
-key(b"?", 3.4)                              # help: keys and how to read it
-key(ESC, 1.2)
-key(b"q", 0.4)
-proc.wait(timeout=5)
+key(b"p", 1.9)                              # pages, with their URLs
+key(DOWN, 0.5), key(DOWN, 0.5), key(DOWN, 0.5), key(DOWN, 1.3)
+key(ESC, 1.0)
+key(b"c", 2.4)                              # group by category
+key(b"g", 2.2)                              # activity graph: time per category
+key(b"g", 0.6), key(b"c", 0.8)              # back to apps / switching
+key(LEFT, 1.3), key(LEFT, 1.0)              # two days back
+key(RIGHT, 0.8), key(RIGHT, 1.0)            # back to today
+key(b"?", 3.2)                              # help: keys and how to read it
+key(ESC, 1.6)                               # end back on the overview, not on the quit screen
+os.write(fd, b"q")                          # quit without recording the terminal-clear that follows
+try:
+    proc.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    proc.kill()
 
 with open(out, "w") as f:
     f.write(json.dumps({"version": 2, "width": W, "height": H, "title": "focus-track"}) + "\n")
