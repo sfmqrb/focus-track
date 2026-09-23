@@ -2,7 +2,7 @@
 
 use crate::render::{dim, paint, theme};
 use crate::store::{CAP, Store, daemon_running, sum, totals};
-use crate::track::{BROWSERS, audio_streams, expand, idle_source};
+use crate::track::{FAMILIES, audio_streams, expand, hypr_socket, idle_source};
 use crate::util::{day_bounds, fmt, hhmm, local, now, today};
 use crate::views::page_key;
 
@@ -24,6 +24,13 @@ pub fn doctor_lines(st: &Store) -> (Vec<String>, bool) {
     };
     let t = now();
 
+    if hypr_socket().is_none() {
+        say(
+            &warn,
+            "no Hyprland socket found".into(),
+            "focus-track records Hyprland sessions; run it from inside Hyprland (exec-once = focus-track daemon)".into(),
+        );
+    }
     let running = daemon_running();
     if running {
         say(&ok, "tracker is running".into(), String::new());
@@ -127,8 +134,9 @@ pub fn doctor_lines(st: &Store) -> (Vec<String>, bool) {
         ),
     }
 
-    for (browser, pattern) in BROWSERS {
-        let profiles = expand(pattern);
+    for (browser, patterns) in FAMILIES {
+        let mut profiles: Vec<_> = patterns.iter().flat_map(|p| expand(p)).collect();
+        profiles.dedup();
         if !profiles.is_empty() {
             let readable = profiles.iter().filter(|p| std::fs::File::open(p).is_ok()).count();
             say(
@@ -137,6 +145,26 @@ pub fn doctor_lines(st: &Store) -> (Vec<String>, bool) {
                 String::new(),
             );
         }
+    }
+    // browsers seen in your data whose history we can't find: their page titles are never stored
+    let recent: Vec<String> = st
+        .con
+        .prepare("SELECT DISTINCT app FROM focus WHERE app != '' AND ts >= ?1")
+        .and_then(|mut s| s.query_map([t - 30.0 * 86400.0], |r| r.get::<_, String>(0))?.collect())
+        .unwrap_or_default();
+    let unknown: Vec<String> = recent
+        .into_iter()
+        .filter(|a| crate::track::is_browser(a) && !crate::track::history_known(a))
+        .collect();
+    if !unknown.is_empty() {
+        say(
+            &warn,
+            format!(
+                "browser without a known history location: {} (page titles and URLs are not stored)",
+                unknown.join(", ")
+            ),
+            "add it under [browsers] in the config to record its pages (focus-track config)".into(),
+        );
     }
     let pages: i64 = st
         .con

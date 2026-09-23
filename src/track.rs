@@ -24,19 +24,103 @@ pub const RESOLVE_WINDOW: f64 = 300.0; // a browser title must appear in history
 pub const SUMMARY_HOUR: u32 = 18; // the end-of-day notification goes out during this hour
 pub const PRIVATE: &str = "(private window or not in history: not recorded)";
 
-/// Window class -> history databases (profiles globbed). Omarchy web apps (chrome-*) use chromium's.
-pub const BROWSERS: &[(&str, &str)] = &[
-    ("chromium", "~/.config/chromium/*/History"),
-    ("brave-browser", "~/.config/BraveSoftware/Brave-Browser/*/History"),
-    ("google-chrome", "~/.config/google-chrome/*/History"),
-    ("firefox", "~/.mozilla/firefox/*/places.sqlite"),
+/// Browser families: a word in the window class -> where that browser keeps its history (profiles globbed;
+/// regular, Flatpak and Snap installs). Chromium-style `History` and Firefox-style `places.sqlite` are both understood.
+pub const FAMILIES: &[(&str, &[&str])] = &[
+    (
+        "chromium",
+        &[
+            "~/.config/chromium/*/History",
+            "~/.var/app/org.chromium.Chromium/config/chromium/*/History",
+            "~/snap/chromium/common/chromium/*/History",
+        ],
+    ),
+    (
+        "chrome",
+        &[
+            "~/.config/google-chrome/*/History",
+            "~/.var/app/com.google.Chrome/config/google-chrome/*/History",
+        ],
+    ),
+    (
+        "brave",
+        &[
+            "~/.config/BraveSoftware/Brave-Browser/*/History",
+            "~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/*/History",
+        ],
+    ),
+    ("vivaldi", &["~/.config/vivaldi/*/History"]),
+    ("edge", &["~/.config/microsoft-edge/*/History"]),
+    ("opera", &["~/.config/opera/History", "~/.config/opera/*/History"]),
+    (
+        "firefox",
+        &[
+            "~/.mozilla/firefox/*/places.sqlite",
+            "~/.config/mozilla/firefox/*/places.sqlite",
+            "~/.var/app/org.mozilla.firefox/.mozilla/firefox/*/places.sqlite",
+            "~/snap/firefox/common/.mozilla/firefox/*/places.sqlite",
+        ],
+    ),
+    (
+        "librewolf",
+        &[
+            "~/.librewolf/*/places.sqlite",
+            "~/.var/app/io.gitlab.librewolf-community/.librewolf/*/places.sqlite",
+        ],
+    ),
+    ("zen", &["~/.zen/*/places.sqlite", "~/.config/zen/*/places.sqlite"]),
+    ("floorp", &["~/.floorp/*/places.sqlite"]),
+    ("waterfox", &["~/.waterfox/*/places.sqlite"]),
 ];
+
+/// Other words that make a window a browser even when we don't know where its history is. Such a browser can't
+/// prove a page wasn't private, so its titles are never stored (the time still counts).
+const BROWSER_WORDS: &[&str] = &["thorium", "helium", "epiphany", "falkon", "qutebrowser", "browser"];
 
 const T5: Duration = Duration::from_secs(5);
 
+/// The words of a window class: `org.mozilla.firefox` -> [org, mozilla, firefox], `Google-chrome` -> [google, chrome].
+fn class_words(app: &str) -> Vec<String> {
+    app.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// History databases of `app` (patterns, not yet expanded): what the user declared, then its browser family.
+fn history_patterns(app: &str, extra: &[(String, String)]) -> Vec<String> {
+    let mut out: Vec<String> = extra.iter().filter(|(c, _)| glob_match(c, app)).map(|(_, p)| p.clone()).collect();
+    let words = class_words(app);
+    let families: Vec<&str> = if app.starts_with("chrome-") && crate::config::webapp_host(app).is_some() {
+        vec!["chromium", "chrome"] // Omarchy web apps: whichever Chromium-based browser launched them
+    } else if app.starts_with("msedge-") {
+        vec!["edge"]
+    } else {
+        FAMILIES.iter().map(|f| f.0).filter(|f| words.iter().any(|w| w == f)).collect()
+    };
+    let webapp_brave = app.starts_with("brave-") && crate::config::webapp_host(app).is_some();
+    for (name, patterns) in FAMILIES {
+        if families.contains(name) || (webapp_brave && *name == "brave") {
+            out.extend(patterns.iter().map(|p| p.to_string()));
+        }
+    }
+    out
+}
+
 pub fn is_browser(app: &str) -> bool {
-    let a = app.to_lowercase();
-    BROWSERS.iter().any(|(b, _)| *b == a) || app.starts_with("chrome-") || crate::config::webapp_host(app).is_some()
+    let words = class_words(app);
+    crate::config::webapp_host(app).is_some()
+        || app.starts_with("chrome-")
+        || crate::config::extra_browsers().iter().any(|(c, _)| glob_match(c, app))
+        || words
+            .iter()
+            .any(|w| FAMILIES.iter().any(|f| f.0 == w) || BROWSER_WORDS.contains(&w.as_str()))
+}
+
+/// Does focus-track know where this browser keeps its history? (If not, page titles are never stored.)
+pub fn history_known(app: &str) -> bool {
+    !history_patterns(app, crate::config::extra_browsers()).is_empty()
 }
 
 /// Drop leading spinner/status glyphs (Claude Code's ◐, CLI braille spinners) and the trailing browser name.
@@ -193,8 +277,15 @@ fn active_window() -> (String, String, String) {
     )
 }
 
-fn hypr_socket() -> Option<PathBuf> {
-    let base = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("hypr");
+/// $XDG_RUNTIME_DIR, or /run/user/<uid> when the recorder was started without it (some autostart methods).
+fn runtime_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })), PathBuf::from)
+}
+
+pub fn hypr_socket() -> Option<PathBuf> {
+    let base = runtime_dir().join("hypr");
     if let Some(sig) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") {
         let p = base.join(sig).join(".socket2.sock");
         if p.exists() {
@@ -214,7 +305,11 @@ fn hypr_socket() -> Option<PathBuf> {
 
 /// Expand `~` and `*`/`?` path components (hidden entries only match patterns that start with a dot).
 pub fn expand(pattern: &str) -> Vec<PathBuf> {
-    let path = expand_home(pattern);
+    // browsers follow XDG_CONFIG_HOME when it is set
+    let path = match pattern.strip_prefix("~/.config/") {
+        Some(rest) => util::config_dir().join(rest),
+        None => expand_home(pattern),
+    };
     let mut acc = vec![PathBuf::from("/")];
     for comp in path.components().skip(1) {
         let c = comp.as_os_str().to_string_lossy().to_string();
@@ -301,18 +396,12 @@ pub fn lookup_url(app: &str, title: &str) -> String {
     if title.is_empty() || !is_browser(app) {
         return String::new();
     }
-    let key = if app.starts_with("chrome-") {
-        "chromium".to_string()
-    } else if app.starts_with("brave-") && crate::config::webapp_host(app).is_some() {
-        "brave-browser".to_string() // a Brave web app keeps its history in Brave's profile
-    } else {
-        app.to_lowercase()
-    };
-    let Some((_, pattern)) = BROWSERS.iter().find(|(b, _)| *b == key) else {
-        return String::new();
-    };
     let candidates: Vec<&str> = std::iter::once(title).chain(strip_count(title)).collect();
-    for path in expand(pattern) {
+    let paths: Vec<PathBuf> = history_patterns(app, crate::config::extra_browsers())
+        .iter()
+        .flat_map(|p| expand(p))
+        .collect();
+    for path in paths {
         // ponytail: first profile with a match wins
         let sql = if path.ends_with("places.sqlite") {
             "SELECT url FROM moz_places WHERE title = ?1 ORDER BY last_visit_date DESC LIMIT 1"
@@ -561,8 +650,10 @@ pub fn daemon() -> anyhow::Result<()> {
     let mut t = Tracker::new(&st.con, System);
     t.summary = true;
     t.backups = true;
+    let mut told = false;
     loop {
         if let Some(sock) = hypr_socket().and_then(|p| UnixStream::connect(p).ok()) {
+            told = false;
             let _ = sock.set_read_timeout(Some(Duration::from_secs_f64(TICK)));
             (t.focused, t.title, t.addr) = active_window();
             t.mode = if media_playing(&t.focused) { "watch".into() } else { String::new() };
@@ -588,6 +679,13 @@ pub fn daemon() -> anyhow::Result<()> {
             }
         }
         // no Hyprland (yet, or restarting): nothing is focused; retry
+        if !told {
+            eprintln!(
+                "focus-track: waiting for Hyprland (no socket under {}/hypr). Nothing is recorded until it is running.",
+                runtime_dir().display()
+            );
+            told = true;
+        }
         t.focused.clear();
         t.title.clear();
         t.mode.clear();
@@ -643,6 +741,57 @@ mod tests {
 
     fn apps(con: &Connection) -> Vec<String> {
         rows(con).into_iter().map(|r| r.0).collect()
+    }
+
+    #[test]
+    fn browsers_are_recognized_by_words_and_never_stored_when_unknown() {
+        for app in [
+            "chromium",
+            "Chromium-browser",
+            "google-chrome-stable",
+            "Google-chrome",
+            "brave-browser",
+            "Brave-browser",
+            "firefox",
+            "firefox-esr",
+            "org.mozilla.firefox",
+            "librewolf",
+            "zen",
+            "zen-browser",
+            "vivaldi-stable",
+            "microsoft-edge",
+            "opera",
+            "floorp",
+            "org.gnome.Epiphany",
+            "thorium-browser",
+            "chrome-discord.com__channels_@me-Default",
+            "brave-x.com__-Default",
+        ] {
+            assert!(is_browser(app), "{app}");
+        }
+        for app in [
+            "com.mitchellh.ghostty",
+            "kitty",
+            "org.telegram.desktop",
+            "mpv",
+            "org.mozilla.Thunderbird",
+            "zenity",
+            "code",
+            "obsidian",
+        ] {
+            assert!(!is_browser(app), "{app}");
+        }
+        // known history location vs. unknown: unknown browsers still count as browsers (titles are dropped, not stored)
+        assert!(history_known("org.mozilla.firefox") && history_known("Google-chrome") && history_known("brave-browser"));
+        assert!(!history_known("thorium-browser"));
+        assert_eq!(lookup_url("thorium-browser", "Some page"), "");
+        // a chrome-* web app can live in either Chromium or Google Chrome
+        let p = history_patterns("chrome-discord.com__x-Default", &[]);
+        assert!(p.iter().any(|x| x.contains("/chromium/")) && p.iter().any(|x| x.contains("google-chrome")));
+        // the user's [browsers] table adds to it
+        let extra = [("my-browser*".to_string(), "~/.config/my-browser/*/History".to_string())];
+        assert_eq!(history_patterns("my-browser-beta", &extra), ["~/.config/my-browser/*/History"]);
+        assert!(history_patterns("my-browser-beta", &[]).is_empty());
     }
 
     #[test]

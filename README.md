@@ -12,19 +12,31 @@ btop-style dashboard shows your day. Everything stays on your machine.
 
 ## Install
 
+Needs Hyprland. Everything else is optional (`pactl`, `notify-send`, `xdg-open`, see [Install](docs/install.md)).
+**Pick one** of these; they are alternatives:
+
+**Prebuilt binary**, any Linux, no Rust needed:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sfmqrb/focus-track/main/install.sh | sh   # any Linux
-cargo install --locked --git https://github.com/sfmqrb/focus-track                    # from source
+curl -fsSL https://raw.githubusercontent.com/sfmqrb/focus-track/main/install.sh | sh
 ```
 
-On Arch you can build a proper package instead: see [Install](docs/install.md#arch-linux).
+**Arch Linux package**: [see Install](docs/install.md#arch-linux).
 
-Then start recording and check it works:
+**From source**, if you have Rust:
 
 ```sh
-systemctl --user enable --now focus-track
+cargo install --locked --git https://github.com/sfmqrb/focus-track
+```
+
+Then start recording and check it works (the installer prints the exact commands for your setup):
+
+```sh
+systemctl --user enable --now focus-track     # or: exec-once = focus-track daemon   in your Hyprland config
 focus-track doctor
 ```
+
+Something not working? See [Troubleshooting](docs/troubleshooting.md).
 
 ## Use
 
@@ -39,7 +51,8 @@ focus-track pages         # websites you visited
 
 - [Install](docs/install.md): verifying downloads, autostart without systemd, the Omarchy bar widget, uninstalling
 - [Usage](docs/usage.md): every command, dashboard keys, how to read the charts
-- [Configuration](docs/configuration.md): names, merging apps, categories
+- [Configuration](docs/configuration.md): names, merging apps, categories, extra browsers
+- [Troubleshooting](docs/troubleshooting.md): install problems, other browsers, no systemd
 - [Privacy & security](SECURITY.md): exactly what is stored, where, and how to delete it
 
 MIT license.

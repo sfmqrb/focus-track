@@ -15,6 +15,11 @@ pub const STARTER: &str = r#"# focus-track config: renames and categories apply 
 # "brave-browser" = "Browser"
 # "chrome-*" = "Web apps"
 
+# Only if your browser isn't recognized (`focus-track doctor` says so): its window class and where its history
+# database lives. Chromium-style "History" and Firefox-style "places.sqlite" files both work. Globs work.
+# [browsers]
+# "my-browser*" = "~/.config/my-browser/*/History"
+
 # Categories. `apps` match names or classes (globs work); `sites` match the page URL of browser time
 # and win over apps, so YouTube in a "work" browser still counts as media. Everything else is "other".
 # [categories.work]
@@ -39,8 +44,17 @@ pub struct Config {
     pub error: Option<String>,
     pub names: Vec<(String, String)>,
     pub categories: Vec<Category>,
+    /// class glob -> history database glob, for browsers focus-track doesn't know
+    pub browsers: Vec<(String, String)>,
     name_cache: RefCell<HashMap<String, String>>,
     cat_cache: RefCell<HashMap<(String, String), String>>,
+}
+
+static EXTRA_BROWSERS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+/// Browsers the user declared in `[browsers]`: (class glob, history database glob).
+pub fn extra_browsers() -> &'static [(String, String)] {
+    EXTRA_BROWSERS.get().map_or(&[], Vec::as_slice)
 }
 
 pub fn path() -> PathBuf {
@@ -64,12 +78,14 @@ impl Config {
                     cfg.error = Some(e);
                     cfg.names.clear();
                     cfg.categories.clear();
+                    cfg.browsers.clear();
                 }
             }
         }
         if let Some(e) = &cfg.error {
             eprintln!("focus-track: ignoring {}: {}", cfg.path.display(), e.trim());
         }
+        let _ = EXTRA_BROWSERS.set(cfg.browsers.clone()); // the recorder's helpers have no Config to hand
         cfg
     }
 
@@ -87,6 +103,13 @@ impl Config {
             for (k, v) in names {
                 let v = v.as_str().ok_or(format!("names.\"{k}\" must be a string"))?;
                 self.names.push((k.clone(), crate::util::sanitize(v)));
+            }
+        }
+        if let Some(bs) = table.get("browsers") {
+            let bs = bs.as_table().ok_or("[browsers] must be a table")?;
+            for (class, path) in bs {
+                let path = path.as_str().ok_or(format!("browsers.\"{class}\" must be a path string"))?;
+                self.browsers.push((class.clone(), path.to_string()));
             }
         }
         if let Some(cats) = table.get("categories") {
@@ -286,6 +309,16 @@ mod tests {
         assert_eq!(cfg.category_of("chromium", "https://github.com"), "work");
         assert_eq!(cfg.category_of("imv", ""), "other");
         assert_eq!(cfg.category_of("mpv", ""), "media");
+    }
+
+    #[test]
+    fn browsers_table() {
+        let cfg = Config::from_str("[browsers]\n\"my-browser*\" = \"~/.config/my-browser/*/History\"").unwrap();
+        assert_eq!(
+            cfg.browsers,
+            [("my-browser*".to_string(), "~/.config/my-browser/*/History".to_string())]
+        );
+        assert!(Config::from_str("[browsers]\nx = 3").is_err());
     }
 
     #[test]

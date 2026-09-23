@@ -25,6 +25,19 @@ shows as **Discord**, `chrome-mail.example.org__…` as **Example Mail**, and di
 `[names]` rules still win. Their site also counts for `sites`, so `sites = ["discord.com"]` catches the Discord app too.
 Unread counters in titles, like `(230) Discord | Friends`, are ignored so one page isn't split into many rows.
 
+## Browsers
+
+focus-track recognizes Chromium, Chrome, Brave, Vivaldi, Edge, Opera, Firefox, LibreWolf, Zen, Floorp and Waterfox,
+including Flatpak and Snap installs, and finds their history by itself. For a browser it can't place, `focus-track
+doctor` says so. Its pages are then **not recorded at all**, since a page can only be trusted to be non-private if it
+appears in the browser's own history. To record them, tell it where the history lives:
+
+```toml
+[browsers]
+"my-browser*" = "~/.config/my-browser/*/History"          # Chromium-style history
+"other-fork"  = "~/.other-fork/*/places.sqlite"           # Firefox-style history
+```
+
 How time gets a category:
 
 1. Browser time on a page whose domain is in some category's `sites` (subdomains included) → that category.
