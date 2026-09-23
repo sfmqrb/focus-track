@@ -1,9 +1,13 @@
 # Install
 
-## Arch Linux (AUR)
+## Arch Linux
+
+Build and install the package from this repository (it's not on the AUR yet):
 
 ```sh
-yay -S focus-track     # or: paru -S focus-track
+git clone https://github.com/sfmqrb/focus-track.git
+cd focus-track/packaging/aur
+makepkg -si
 ```
 
 Installs `/usr/bin/focus-track`, a systemd user unit, shell completions (bash, zsh, fish) and the Omarchy bar widget
@@ -54,7 +58,7 @@ exec-once = focus-track daemon
 
 A small ring of today's apps (or categories) with a dot that breathes while you're tracked; click it for the dashboard.
 
-1. Copy [`extras/omarchy/focus.qml`](../extras/omarchy/focus.qml) (AUR: `/usr/share/focus-track/omarchy/focus.qml`)
+1. Copy [`extras/omarchy/focus.qml`](../extras/omarchy/focus.qml) (Arch package: `/usr/share/focus-track/omarchy/focus.qml`)
    to `~/.config/omarchy/bar/modules/focus.qml`. If `focus-track` isn't in `/usr/bin`, put its full path in the file.
 2. Add `{ "id": "focus", "type": "qml" }` to `bar.layout.right` in `~/.config/omarchy/shell.json`.
 3. `omarchy restart shell`
@@ -63,6 +67,6 @@ A small ring of today's apps (or categories) with a dot that breathes while you'
 
 ```sh
 systemctl --user disable --now focus-track
-rm ~/.local/bin/focus-track ~/.config/systemd/user/focus-track.service   # AUR: pacman -R focus-track
+rm ~/.local/bin/focus-track ~/.config/systemd/user/focus-track.service   # Arch package: pacman -R focus-track
 rm -r ~/.local/state/focus-track.db* ~/.cache/focus-track ~/.config/focus-track   # your data and config
 ```

@@ -12,10 +12,11 @@ btop-style dashboard shows your day. Everything stays on your machine.
 ## Install
 
 ```sh
-yay -S focus-track                                   # Arch (AUR)
 curl -fsSL https://raw.githubusercontent.com/sfmqrb/focus-track/main/install.sh | sh   # any Linux
 cargo install --locked --git https://github.com/sfmqrb/focus-track                    # from source
 ```
+
+On Arch you can build a proper package instead: see [Install](docs/install.md#arch-linux).
 
 Then start recording and check it works:
 
