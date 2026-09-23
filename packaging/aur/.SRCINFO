@@ -1,6 +1,6 @@
 pkgbase = focus-track
 	pkgdesc = See where your time goes on Hyprland: tracks the focused app, with a btop-style terminal dashboard
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/sfmqrb/focus-track
 	arch = x86_64
@@ -13,7 +13,7 @@ pkgbase = focus-track
 	optdepends = libpulse: count playing video and calls as "watching" (pactl)
 	optdepends = xdg-utils: open pages in the browser from the dashboard
 	optdepends = libnotify: the end-of-day summary notification
-	source = focus-track-0.1.0.tar.gz::https://github.com/sfmqrb/focus-track/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = 497db27ecc46d7365df7df62e9cf9845858014413295015e13a2220e49a40136
+	source = focus-track-0.1.1.tar.gz::https://github.com/sfmqrb/focus-track/archive/refs/tags/v0.1.1.tar.gz
+	sha256sums = f2d1de34b8dae78f84158990b8574ce60067f764ff322f689d0c6d5baf2abd9b
 
 pkgname = focus-track
