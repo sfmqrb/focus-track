@@ -1,0 +1,21 @@
+# Config used for the README demo.
+[names]
+"com.mitchellh.ghostty" = "Terminal"
+"org.telegram.desktop" = "Telegram"
+"org.gnome.Nautilus" = "Files"
+"code" = "VS Code"
+"firefox" = "Firefox"
+
+[categories.work]
+apps = ["Terminal", "VS Code", "obsidian"]
+sites = ["doc.rust-lang.org", "docs.rs", "github.com", "wiki.hypr.land", "stackoverflow.com"]
+
+[categories.media]
+apps = ["mpv", "spotify"]
+sites = ["youtube.com"]
+
+[categories.chat]
+apps = ["Telegram", "slack", "zoom"]
+
+[categories.news]
+sites = ["news.ycombinator.com", "reddit.com"]

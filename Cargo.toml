@@ -1,6 +1,6 @@
 [package]
 name = "focus-track"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "See where your time goes on Hyprland: tracks the focused app, with a btop-style dashboard"
@@ -9,7 +9,7 @@ repository = "https://github.com/sfmqrb/focus-track"
 readme = "README.md"
 keywords = ["hyprland", "time-tracking", "tui", "productivity", "wayland"]
 categories = ["command-line-utilities"]
-exclude = ["/packaging", "/.github", "/install.sh"]
+exclude = ["/packaging", "/.github", "/install.sh", "/demo", "/docs"]
 
 [features]
 default = ["bundled-sqlite"]

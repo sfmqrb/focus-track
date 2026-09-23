@@ -168,7 +168,11 @@ pub fn today_lines(
         if done { paint(&th.app[1], "✓") } else { " ".into() }
     );
     let mut lines = vec![
-        fit(&head, w.saturating_sub(16)) + &" ".repeat(16usize.saturating_sub(vlen(&status))) + &status,
+        if status.is_empty() {
+            fit(&head, w)
+        } else {
+            fit(&head, w.saturating_sub(16)) + &" ".repeat(16usize.saturating_sub(vlen(&status))) + &status
+        },
         goal_line,
         String::new(),
     ];
@@ -202,7 +206,7 @@ pub fn today_lines(
             fmt(*s),
             dim(&pct(s / total))
         );
-        lines.push(if Some(i) == sel { highlight(&row, w, &app_code(i)) } else { row });
+        lines.push(if Some(i) == sel { highlight(&row, w) } else { row });
     }
     lines.extend(footer);
     lines
@@ -594,7 +598,7 @@ pub fn windows_lines(st: &Store, d: NaiveDate, group: &str, w: usize, n: usize, 
                 format!("{title}{}", dim(&format!("  {}", crate::config::host(url))))
             };
             let row = format!("{} {} {:>5}", link(url, &fit(&text, tw)), meter(s / best, bar_w, &code), fmt(*s));
-            if sel == Some(first + j) { highlight(&row, w, &code) } else { row }
+            if sel == Some(first + j) { highlight(&row, w) } else { row }
         })
         .collect();
     lines.extend(footer);
@@ -661,11 +665,7 @@ pub fn pages_lines(
             link(&url, &fit(&label, tw)),
             dim(&link(&url, &fit(&pretty, uw - 1)))
         );
-        lines.push(if sel == Some(first + j) {
-            highlight(&row, w, &theme().accent)
-        } else {
-            row
-        });
+        lines.push(if sel == Some(first + j) { highlight(&row, w) } else { row });
     }
     lines.extend(footer);
     lines
@@ -736,6 +736,11 @@ pub fn app_summary_lines(st: &Store, d: NaiveDate, app: &str) -> Vec<String> {
         .collect();
         classes.sort();
         let cat = classes.first().map_or_else(|| "other".to_string(), |c| st.cfg.category_of(c, ""));
+        let cat = if cat == "other" && classes.iter().any(|c| is_browser(c)) {
+            "per page, by site".to_string()
+        } else {
+            cat
+        };
         lines.push(dim(&format!("class: {} · category: {cat}", classes.join(", "))));
     }
     lines

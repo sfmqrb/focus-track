@@ -810,11 +810,12 @@ mod tests {
         f
     }
 
-    /// Text of reversed (selected) rows.
+    /// Text of the selected (highlighted) rows, without the panel border.
     fn selected(f: &[String]) -> Vec<String> {
+        let band = format!("\x1b[{}m", crate::render::theme().select);
         f.iter()
-            .filter_map(|l| l.find("\x1b[7;").map(|i| &l[i..]))
-            .map(|rest| strip_ansi(rest.split("\x1b[0m").next().unwrap_or("")).trim().to_string())
+            .filter(|l| l.contains(&band))
+            .map(|l| strip_ansi(l).trim_matches(|c: char| c == '│' || c.is_whitespace()).to_string())
             .collect()
     }
 

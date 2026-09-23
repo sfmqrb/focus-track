@@ -25,6 +25,7 @@ pub struct Theme {
     pub dim: String,
     pub text: String,
     pub heat: Vec<String>,
+    pub select: String,
 }
 
 /// (theme color name, ANSI fallback, hex fallback) for apps, in rank order.
@@ -35,12 +36,12 @@ const PALETTE: [(&str, &str, &str); 12] = [
     ("cyan", "36", "#7dcfff"),
     ("yellow", "33", "#e0af68"),
     ("red", "31", "#f7768e"),
-    ("bright_blue", "94", "#8db0ff"),
-    ("bright_green", "92", "#b9f27c"),
-    ("bright_magenta", "95", "#c7a9ff"),
+    ("orange", "91", "#ff9e64"), // hues that differ from the first six before any bright repeats
     ("bright_cyan", "96", "#a4daff"),
+    ("bright_magenta", "95", "#c7a9ff"),
+    ("bright_green", "92", "#b9f27c"),
+    ("bright_blue", "94", "#8db0ff"),
     ("bright_yellow", "93", "#ffc777"),
-    ("bright_red", "91", "#ff899d"),
 ];
 
 static THEME: OnceLock<Theme> = OnceLock::new();
@@ -90,6 +91,11 @@ fn load_theme() -> Theme {
         dim: fg("dark_foreground", "2"),
         text: fg("foreground", "39"),
         heat,
+        // the selected row: a background band between the panel color and the accent, like btop
+        select: match (hex("lighter_background"), hex("accent")) {
+            (Some(a), Some(b)) => blend(&a, &b, 0.35).replacen("38;", "48;", 1),
+            _ => "48;5;238".into(),
+        },
     }
 }
 
@@ -263,9 +269,14 @@ pub fn legend_lines(names: &[String], w: usize) -> Vec<String> {
     lines
 }
 
-/// The selected row of any list: the whole line reversed, in the item's color.
-pub fn highlight(line: &str, w: usize, code: &str) -> String {
-    paint(&format!("7;{code}"), &fit(&strip_ansi(line), w))
+/// The selected row of any list: a background band across the whole line; the row keeps its own colors,
+/// so meters still show how much.
+pub fn highlight(line: &str, w: usize) -> String {
+    if !tty() {
+        return fit(line, w);
+    }
+    let band = format!("\x1b[{}m", theme().select);
+    format!("{band}\x1b[1m{}\x1b[0m", fit(line, w).replace("\x1b[0m", &format!("\x1b[0m{band}")))
 }
 
 /// "key what  key what" with keys in the accent color. The last two pairs (help, quit/back) always
