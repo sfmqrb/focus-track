@@ -1,0 +1,14 @@
+[Unit]
+Description=focus-track: record which Hyprland window has focus
+Documentation=https://github.com/sfmqrb/focus-track
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/focus-track daemon
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

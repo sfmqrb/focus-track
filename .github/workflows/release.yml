@@ -1,0 +1,63 @@
+# Builds static (musl) binaries when a v* tag is pushed, publishes them with SHA256SUMS,
+# and attests where they came from (verify with: gh attestation verify <file> --repo sfmqrb/focus-track).
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add "$TARGET"
+      - run: cargo test --locked
+      - name: build
+        run: |
+          export CC_${TARGET//-/_}=musl-gcc
+          cargo build --release --locked --target "$TARGET"
+      - name: package
+        run: |
+          name="focus-track-${GITHUB_REF_NAME}-${TARGET}"
+          mkdir "$name"
+          cp "target/$TARGET/release/focus-track" README.md LICENSE "$name/"
+          cp -r extras "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            focus-track-*.tar.gz
+            target/${{ matrix.target }}/release/focus-track
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.target }}
+          path: focus-track-*.tar.gz*
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+      - run: cat focus-track-*.sha256 > SHA256SUMS && cat SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes focus-track-*.tar.gz SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}

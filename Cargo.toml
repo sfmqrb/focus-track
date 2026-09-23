@@ -1,0 +1,34 @@
+[package]
+name = "focus-track"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "See where your time goes on Hyprland: tracks the focused app, with a btop-style dashboard"
+license = "MIT"
+repository = "https://github.com/sfmqrb/focus-track"
+readme = "README.md"
+keywords = ["hyprland", "time-tracking", "tui", "productivity", "wayland"]
+categories = ["command-line-utilities"]
+exclude = ["/packaging", "/.github", "/install.sh"]
+
+[features]
+default = ["bundled-sqlite"]
+# Compile SQLite into the binary (portable release builds). Distro packages turn this off and link the system libsqlite3.
+bundled-sqlite = ["rusqlite/bundled"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+crossterm = "0.29"
+libc = "0.2"
+rusqlite = "0.40"
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "1", features = ["preserve_order"] }
+unicode-width = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
