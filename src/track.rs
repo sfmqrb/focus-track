@@ -341,9 +341,8 @@ fn fnv(p: &Path) -> u64 {
 
 /// Private copy of a browser's history database (browsers keep it locked), refreshed when it changes.
 /// The copy is full browsing history, so it lives in a 0700 directory as 0600 files.
-fn snapshot(path: &Path) -> Option<PathBuf> {
-    let dir = cache_dir();
-    store::private_dir(&dir);
+fn snapshot(path: &Path, dir: &Path) -> Option<PathBuf> {
+    store::private_dir(dir);
     let dest = dir.join(format!("{:016x}.sqlite", fnv(path)));
     let with = |p: &Path, suffix: &str| {
         let mut s = p.as_os_str().to_owned();
@@ -396,11 +395,17 @@ pub fn lookup_url(app: &str, title: &str) -> String {
     if title.is_empty() || !is_browser(app) {
         return String::new();
     }
-    let candidates: Vec<&str> = std::iter::once(title).chain(strip_count(title)).collect();
     let paths: Vec<PathBuf> = history_patterns(app, crate::config::extra_browsers())
         .iter()
         .flat_map(|p| expand(p))
         .collect();
+    lookup_in(&paths, title, &cache_dir())
+}
+
+/// Look `title` up in these history databases (Chromium `History` or Firefox `places.sqlite`), reading
+/// private copies made in `copies`.
+fn lookup_in(paths: &[PathBuf], title: &str, copies: &Path) -> String {
+    let candidates: Vec<&str> = std::iter::once(title).chain(strip_count(title)).collect();
     for path in paths {
         // ponytail: first profile with a match wins
         let sql = if path.ends_with("places.sqlite") {
@@ -408,7 +413,7 @@ pub fn lookup_url(app: &str, title: &str) -> String {
         } else {
             "SELECT url FROM urls WHERE title = ?1 ORDER BY last_visit_time DESC LIMIT 1"
         };
-        let Some(copy) = snapshot(&path) else { continue };
+        let Some(copy) = snapshot(path, copies) else { continue };
         let Ok(con) = Connection::open(&copy) else { continue };
         for t in &candidates {
             if let Ok(url) = con.query_row(sql, [t], |r| r.get::<_, String>(0)) {
@@ -743,6 +748,125 @@ mod tests {
         rows(con).into_iter().map(|r| r.0).collect()
     }
 
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("focus-track-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A browser history database in the real on-disk format.
+    fn chromium_history(path: &Path, rows: &[(&str, &str, i64)]) {
+        let con = Connection::open(path).unwrap();
+        con.execute_batch("CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, title TEXT, last_visit_time INTEGER)")
+            .unwrap();
+        for (url, title, t) in rows {
+            con.execute(
+                "INSERT INTO urls (url, title, last_visit_time) VALUES (?1, ?2, ?3)",
+                params![url, title, t],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn history_lookup_in_real_formats() {
+        let dir = tmp("history");
+        let copies = dir.join("copies");
+        let chrome = dir.join("History");
+        chromium_history(
+            &chrome,
+            &[
+                ("https://old.example/a", "Same title", 1),
+                ("https://new.example/a", "Same title", 2), // the most recent visit wins
+                ("https://mail.example/", "Inbox", 5),
+            ],
+        );
+        let firefox = dir.join("places.sqlite");
+        let ff = Connection::open(&firefox).unwrap();
+        ff.execute_batch(
+            "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT, last_visit_date INTEGER);
+             INSERT INTO moz_places (url, title, last_visit_date) VALUES ('https://fox.example/', 'Fox page', 7);",
+        )
+        .unwrap();
+        drop(ff);
+        let paths = [chrome.clone(), firefox.clone()];
+        assert_eq!(lookup_in(&paths, "Same title", &copies), "https://new.example/a");
+        assert_eq!(
+            lookup_in(&paths, "(12) Inbox", &copies),
+            "https://mail.example/",
+            "unread counter ignored"
+        );
+        assert_eq!(lookup_in(&paths, "Fox page", &copies), "https://fox.example/", "Firefox format");
+        assert_eq!(lookup_in(&paths, "Never visited (private)", &copies), "", "not in history: nothing");
+        // copies are private, and refreshed when the browser writes new history
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&copies).unwrap().permissions().mode() & 0o777, 0o700);
+        for e in std::fs::read_dir(&copies).unwrap().flatten() {
+            assert_eq!(e.metadata().unwrap().permissions().mode() & 0o777, 0o600, "{:?}", e.path());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        Connection::open(&chrome)
+            .unwrap()
+            .execute(
+                "INSERT INTO urls (url, title, last_visit_time) VALUES ('https://late.example/', 'Visited later', 9)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            lookup_in(&paths, "Visited later", &copies),
+            "https://late.example/",
+            "copy refreshed"
+        );
+        // a missing or broken database is skipped, not fatal
+        std::fs::write(dir.join("broken"), b"not a database").unwrap();
+        let with_junk = [dir.join("missing"), dir.join("broken"), chrome];
+        assert_eq!(lookup_in(&with_junk, "Inbox", &copies), "https://mail.example/");
+        // control characters in a stored URL never come back out
+        let evil = dir.join("Evil");
+        chromium_history(&evil, &[("https://x.example/\x1b]8;;bad\x07", "Evil", 1)]);
+        assert_eq!(lookup_in(&[evil], "Evil", &copies), "https://x.example/]8;;bad");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heartbeat_and_ordering() {
+        let (con, f) = (db(), fake());
+        let mut t = Tracker::new(&con, &f);
+        t.event("activewindow>>kitty,zsh");
+        assert_eq!(rows(&con).len(), 1);
+        t.tick();
+        assert_eq!(rows(&con).len(), 1, "no heartbeat before HEARTBEAT has passed");
+        t.logged_at -= HEARTBEAT + 1.0;
+        t.last_tick = now();
+        t.tick();
+        let r = rows(&con);
+        assert_eq!((r.len(), r[1].0.as_str()), (2, "kitty"), "heartbeat re-logs the focused app");
+        // backdating never writes a row earlier than the one before it
+        let ts: Vec<f64> = con
+            .prepare("SELECT ts FROM focus ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        f.away.set((true, 1e9, false)); // "idle since forever"
+        t.tick();
+        let ts2: Vec<f64> = con
+            .prepare("SELECT ts FROM focus ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(ts2.windows(2).all(|w| w[1] >= w[0]), "rows stay in time order: {ts:?} -> {ts2:?}");
+        // an empty class (nothing focused, e.g. an empty workspace) is recorded as away
+        f.away.set((false, 0.0, false));
+        t.tick();
+        t.event("activewindow>>,");
+        assert_eq!(apps(&con).last().unwrap(), "");
+    }
+
     #[test]
     fn browsers_are_recognized_by_words_and_never_stored_when_unknown() {
         for app in [
@@ -796,6 +920,12 @@ mod tests {
 
     #[test]
     fn titles() {
+        assert_eq!(clean_title("Docs — Mozilla Firefox"), "Docs");
+        assert_eq!(clean_title("News – Brave"), "News");
+        assert_eq!(clean_title("Page - Google Chrome"), "Page");
+        assert_eq!(clean_title("Only - Chromium - Chromium"), "Only - Chromium", "one suffix removed");
+        assert_eq!(clean_title(&"x".repeat(500)).chars().count(), 200, "titles are capped");
+        assert_eq!(clean_title("   "), "");
         assert_eq!(clean_title("◑ Interesting ideas"), "Interesting ideas");
         assert_eq!(clean_title("⠋ npm test"), "npm test");
         assert_eq!(clean_title("Cats - YouTube - Chromium"), "Cats - YouTube");

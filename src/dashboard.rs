@@ -1143,6 +1143,90 @@ mod tests {
         assert!(!safe_url("https://"));
     }
 
+    fn no_open(_: &str) -> bool {
+        true
+    }
+
+    /// Thousands of random keys, clicks and scrolls at random terminal sizes: no panic, every frame fills the
+    /// terminal exactly, and every selection stays inside its list.
+    #[test]
+    fn random_input_never_breaks_the_screen() {
+        set_tty(true);
+        let st = stress_store(yesterday());
+        let mut seed: u64 = 0x5eed_f0c5;
+        let mut rnd = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let keys = [
+            Input::Up,
+            Input::Down,
+            Input::PgUp,
+            Input::PgDn,
+            Input::Home,
+            Input::End,
+            Input::Left,
+            Input::Right,
+            Input::Tab,
+            Input::BackTab,
+            Input::Enter,
+            Input::Esc,
+            Input::Backspace,
+            Input::HalfUp,
+            Input::HalfDown,
+        ];
+        let chars = "jkhlgGmcpt/?0123456789aqQx ";
+        let sizes = [(MIN_W, MIN_H), (80, 24), (100, 32), (132, 43), (200, 60)];
+        let mut ui = new_ui();
+        ui.opener = no_open;
+        let (mut w, mut h) = sizes[0];
+        for i in 0..2500 {
+            if i % 97 == 0 {
+                (w, h) = sizes[rnd(sizes.len())];
+            }
+            let input = match rnd(10) {
+                0..=4 => keys[rnd(keys.len())],
+                5..=7 => Input::Char(chars.chars().nth(rnd(chars.len())).unwrap()),
+                8 => Input::Click(rnd(w), rnd(h)),
+                _ => Input::Wheel(rnd(2) == 0, rnd(w), rnd(h)),
+            };
+            if !handle(&st, &mut ui, input) {
+                ui = new_ui(); // q quits; start again
+                ui.opener = no_open;
+            }
+            if ui.d < days_before(today(), 5) {
+                ui.d = yesterday(); // stay near the data
+            }
+            let f = frame(&st, &mut ui, w, h);
+            assert_eq!(f.len(), h, "step {i} {input:?}: {} lines at {w}x{h}", f.len());
+            for l in &f {
+                assert_eq!(vlen(l), w, "step {i} {input:?} at {w}x{h}: {}", strip_ansi(l));
+            }
+            assert!(
+                ui.apps.is_empty() || ui.sel < ui.apps.len(),
+                "step {i}: selection {} of {}",
+                ui.sel,
+                ui.apps.len()
+            );
+        }
+        st.group.set(Group::App);
+    }
+
+    #[test]
+    fn right_never_goes_past_today() {
+        let st = stress_store(yesterday());
+        let mut ui = Ui::new(today(), 8, 3600.0);
+        for _ in 0..3 {
+            handle(&st, &mut ui, Input::Right);
+        }
+        assert_eq!(ui.d, today());
+        handle(&st, &mut ui, Input::Left);
+        handle(&st, &mut ui, Input::Char('t'));
+        assert_eq!(ui.d, today());
+    }
+
     #[test]
     fn vim_keys() {
         set_tty(true);

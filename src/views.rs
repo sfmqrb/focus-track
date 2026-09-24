@@ -866,10 +866,137 @@ pub fn widget_json(st: &Store) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::strip_ansi;
+    use crate::render::{set_tty, strip_ansi};
+    use crate::store::test_store;
+    use crate::util::midnight;
+
+    /// Rows like the recorder writes them: `app` from `from` to `to` (hours of day `d`), re-logged every
+    /// 4 minutes (the heartbeat; longer silences mean the recorder was down), then nothing focused.
+    fn stint(st: &Store, d: NaiveDate, from: f64, to: f64, app: &str, title: &str, url: &str) {
+        let (a, b) = (midnight(d) + from * 3600.0, midnight(d) + to * 3600.0);
+        let mut t = a;
+        while t < b {
+            st.con
+                .execute(
+                    "INSERT INTO focus (ts, app, title, url) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![t, app, title, url],
+                )
+                .unwrap();
+            t += 240.0;
+        }
+        st.con
+            .execute("INSERT INTO focus (ts, app, title, url) VALUES (?1, '', '', '')", [b])
+            .unwrap();
+    }
+
+    /// Yesterday: 09:00 code 1h, 10:00 firefox 30m on a page, 10:30 away, 11:00 code 30m.
+    fn day_store() -> (Store, NaiveDate) {
+        let st = test_store("[names]\n\"code\" = \"Editor\"\n[categories.work]\napps = [\"Editor\"]\nsites = [\"docs.rs\"]");
+        let d = days_before(today(), 1);
+        stint(&st, d, 9.0, 10.0, "code", "main.rs", "");
+        stint(&st, d, 10.0, 10.5, "firefox", "crossterm - Rust", "https://docs.rs/crossterm");
+        stint(&st, d, 11.0, 11.5, "code", "lib.rs", "");
+        (st, d)
+    }
+
+    fn plain(lines: &[String]) -> String {
+        lines.iter().map(|l| strip_ansi(l)).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn views_show_the_right_numbers() {
+        set_tty(true); // shared by all tests (they run in parallel); text is compared with colors stripped
+        let (st, d) = day_store();
+        let t = plain(&today_lines(&st, d, 90, None, 6.0 * 3600.0, 8, None, ""));
+        assert!(t.contains("2h00 focused"), "{t}");
+        assert!(t.contains("Editor") && t.contains("1h30") && t.contains("75%"), "{t}");
+        assert!(t.contains("firefox") && t.contains("30m") && t.contains("25%"), "{t}");
+        assert!(t.contains("2 switches") && t.contains("since 09:00"), "{t}");
+        let t = plain(&today_lines(&st, d, 90, None, 6.0 * 3600.0, 8, None, "fire"));
+        assert!(t.contains("firefox") && !t.contains("Editor"), "filter: {t}");
+        let t = plain(&streak_lines(&st, d, 5, 80));
+        assert!(
+            t.lines()
+                .nth(2)
+                .is_some_and(|l| l.contains("09:00") && l.contains("Editor") && l.contains("1h00")),
+            "{t}"
+        );
+        let t = plain(&timeline_lines(&st, d, 8, 80, None, None));
+        let hours: Vec<&str> = t
+            .lines()
+            .filter_map(|l| l.get(..3))
+            .filter(|x| x.trim().parse::<u32>().is_ok())
+            .collect();
+        assert_eq!(hours, ["09 ", "10 ", "11 "], "{t}");
+        let t = plain(&week_lines(&st, d, 7, 8, 80));
+        assert!(
+            t.contains("2h00 focused in 7 days") && t.lines().any(|l| l.ends_with(" 2h00")),
+            "{t}"
+        );
+        let t = plain(&heat_lines(&st, d, 3, 80));
+        let row = t.lines().find(|l| l.contains(&d.format("%a %d").to_string())).unwrap();
+        assert_eq!(row.matches(crate::render::DOT).count(), 3, "09, 10 and 11 o'clock: {row}");
+        assert!(row.trim_end().ends_with("2h00"), "{row}");
+        let t = plain(&graph_lines(&st, d, 60, 4, "switches", None));
+        assert!(t.contains("peak"), "{t}");
+        // pages: the firefox page with its URL, and one private-looking browser row without a URL
+        stint(&st, d, 12.0, 12.25, "firefox", "", "");
+        st.expire(0.0);
+        let (s0, e0) = day_bounds(d);
+        let t = plain(&pages_lines(&st, s0, e0, 100, 20, "", &mut Pager::default(), None));
+        assert!(t.contains("1 pages · 30m") && t.contains("15m in private windows"), "{t}");
+        assert!(t.contains("crossterm - Rust") && t.contains("docs.rs/crossterm"), "{t}");
+        // app detail and the list of apps
+        let t = plain(&windows_lines(&st, d, "Editor", 90, 10, &mut Pager::default(), None, ""));
+        assert!(
+            t.contains("main.rs") && t.contains("1h00") && t.contains("lib.rs") && t.contains("30m"),
+            "{t}"
+        );
+        let t = plain(&app_summary_lines(&st, d, "Editor"));
+        assert!(
+            t.contains("1h30") && t.contains("2 sessions") && t.contains("class: code") && t.contains("category: work"),
+            "{t}"
+        );
+        let t = plain(&apps_lines(&st, 3));
+        assert!(
+            t.lines().any(|l| l.contains("code") && l.contains("Editor") && l.contains("work")),
+            "{t}"
+        );
+        // categories: the docs.rs page counts as work although firefox itself has no category
+        st.group.set(Group::Category);
+        let t = plain(&today_lines(&st, d, 90, None, 6.0 * 3600.0, 8, None, ""));
+        assert!(t.contains("work") && t.contains("2h00") && t.contains("other"), "{t}");
+        st.group.set(Group::App);
+        // the bar widget: valid JSON, shares that add up
+        let v: serde_json::Value = serde_json::from_str(&widget_json(&st)).unwrap();
+        assert!(v["slices"].is_array() && v["tooltip"].as_str().is_some() && v["accent"].as_str().is_some_and(|a| a.starts_with('#')));
+    }
+
+    #[test]
+    fn baseline_and_trend() {
+        let (st, d) = day_store();
+        assert!(baseline(&st, d, 7).is_none(), "no earlier days: no comparison");
+        let day_before = days_before(d, 1);
+        stint(&st, day_before, 1.0, 2.0, "code", "", "");
+        st.expire(0.0);
+        let b = baseline(&st, d, 7).unwrap();
+        assert_eq!(b.get("Editor").copied(), Some(3600.0));
+        assert_eq!(strip_ansi(&trend(5400.0, 3600.0)), "▲");
+        assert_eq!(strip_ansi(&trend(1800.0, 3600.0)), "▼");
+        assert_eq!(strip_ansi(&trend(3700.0, 3600.0)), "–");
+        assert_eq!(strip_ansi(&trend(10.0, 0.0)), "–", "tiny amounts are 'about the same'");
+    }
 
     #[test]
     fn pager() {
+        let mut empty = Pager::default();
+        assert_eq!(
+            empty.view::<usize>(&[], 5, Some(3)),
+            (vec![], None),
+            "empty lists and stale selections are fine"
+        );
+        empty.move_by(-5);
+        assert_eq!(empty.scroll, 0);
         let items: Vec<usize> = (0..20).collect();
         let mut pg = Pager::default();
         assert_eq!(pg.view(&items, 8, None).0, items[..7]);

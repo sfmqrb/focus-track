@@ -286,3 +286,31 @@ pub fn doctor_lines(st: &Store) -> (Vec<String>, bool) {
     );
     (out, broken)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::{set_tty, strip_ansi};
+    use crate::store::test_store;
+
+    #[test]
+    fn finds_gaps_and_unknown_browsers() {
+        set_tty(true); // shared by all tests; compared with colors stripped
+        let st = test_store("");
+        let t = now();
+        // the recorder wrote code at -2h, then nothing until -100 s: a gap it can't have been running through
+        st.con
+            .execute(
+                "INSERT INTO focus (ts, app) VALUES (?1, 'code'), (?2, 'thorium-browser'), (?3, '')",
+                rusqlite::params![t - 7200.0, t - 100.0, t - 50.0],
+            )
+            .unwrap();
+        let (lines, broken) = doctor_lines(&st);
+        let text = lines.iter().map(|l| strip_ansi(l)).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("untracked while the tracker was down (7 days): 1h48"), "{text}");
+        assert!(text.contains("browser without a known history location: thorium-browser"), "{text}");
+        assert!(text.contains("database: 3 rows"), "{text}");
+        assert!(lines.iter().all(|l| !l.is_empty()));
+        let _ = broken; // depends on whether a recorder runs on this machine
+    }
+}
