@@ -281,7 +281,7 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        _ => single(&views::day_label(d), |w| views::today_lines(&st, d, w, None, goal, top, None)),
+        _ => single(&views::day_label(d), |w| views::today_lines(&st, d, w, None, goal, top, None, "")),
     }
     Ok(())
 }

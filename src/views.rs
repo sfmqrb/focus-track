@@ -136,6 +136,7 @@ pub fn today_lines(
     goal: f64,
     cap: usize,
     pager: Option<&mut Pager>,
+    filter: &str,
 ) -> Vec<String> {
     let th = theme();
     let (s0, e0) = day_bounds(d);
@@ -180,36 +181,53 @@ pub fn today_lines(
         return nothing(lines);
     }
     let usual = baseline(st, d, 7);
+    // scale, colors and column widths come from all apps, so filtering or scrolling doesn't make things jump
     let best = t[0].1;
-    let name_w = t.iter().map(|x| x.0.width()).max().unwrap_or(1).min(16); // all apps, so columns don't shift while scrolling
+    let name_w = t.iter().map(|x| x.0.width()).max().unwrap_or(1).min(16);
     let bar_w = w.saturating_sub(name_w + 15).max(5);
+    // (rank in the full list, name, seconds), narrowed by the search filter
+    let list: Vec<(usize, String, f64)> = t
+        .iter()
+        .enumerate()
+        .filter(|(_, (a, _))| matches(a, filter))
+        .map(|(i, (a, s))| (i, a.clone(), *s))
+        .collect();
+    if list.is_empty() {
+        lines.push(dim(&format!("no apps match '{filter}'")));
+        return lines;
+    }
     let (shown, first, footer) = match pager {
         Some(pg) => {
-            let (v, f) = pg.view(&t, cap, sel);
+            let (v, f) = pg.view(&list, cap, sel);
             (v, pg.scroll, f)
         }
         None => {
-            let rest = &t[cap.min(t.len())..];
-            let footer = (!rest.is_empty()).then(|| dim(&format!("+ {} more · {}", rest.len(), fmt(sum(rest)))));
-            (t[..cap.min(t.len())].to_vec(), 0, footer)
+            let rest: f64 = list[cap.min(list.len())..].iter().map(|x| x.2).sum();
+            let n_rest = list.len().saturating_sub(cap);
+            let footer = (n_rest > 0).then(|| dim(&format!("+ {n_rest} more · {}", fmt(rest))));
+            (list[..cap.min(list.len())].to_vec(), 0, footer)
         }
     };
-    for (j, (app, s)) in shown.iter().enumerate() {
-        let i = first + j;
+    for (j, (rank, app, s)) in shown.iter().enumerate() {
         let mark = usual
             .as_ref()
             .map_or_else(|| " ".to_string(), |u| trend(*s, *u.get(app).unwrap_or(&0.0)));
         let row = format!(
             "{} {} {:>5} {} {mark}",
-            color(i, &fit(app, name_w)),
-            meter(s / best, bar_w, &app_code(i)),
+            color(*rank, &fit(app, name_w)),
+            meter(s / best, bar_w, &app_code(*rank)),
             fmt(*s),
             dim(&pct(s / total))
         );
-        lines.push(if Some(i) == sel { highlight(&row, w) } else { row });
+        lines.push(if Some(first + j) == sel { highlight(&row, w) } else { row });
     }
     lines.extend(footer);
     lines
+}
+
+/// Case-insensitive "contains"; an empty filter matches everything.
+pub fn matches(text: &str, filter: &str) -> bool {
+    filter.is_empty() || text.to_lowercase().contains(&filter.to_lowercase())
 }
 
 pub fn streak_lines(st: &Store, d: NaiveDate, top: usize, w: usize) -> Vec<String> {
@@ -565,17 +583,33 @@ pub fn page_key(r: &Row) -> String {
 }
 
 /// Windows of one app (or category) with their time: ("title<TAB>url", seconds), biggest first.
-pub fn window_items(st: &Store, d: NaiveDate, group: &str) -> Vec<(String, f64)> {
+pub fn window_items(st: &Store, d: NaiveDate, group: &str, filter: &str) -> Vec<(String, f64)> {
     let (s0, e0) = day_bounds(d);
-    totals(&st.spans(s0, e0, &|r| window_key(st, group, r)))
+    let mut t = totals(&st.spans(s0, e0, &|r| window_key(st, group, r)));
+    t.retain(|(k, _)| matches(&k.replace('\t', " "), filter)); // title and URL
+    t
 }
 
 /// Where the time in one app (or category) went, by window title; browser pages link to their URL.
-pub fn windows_lines(st: &Store, d: NaiveDate, group: &str, w: usize, n: usize, pager: &mut Pager, sel: Option<usize>) -> Vec<String> {
+#[allow(clippy::too_many_arguments)]
+pub fn windows_lines(
+    st: &Store,
+    d: NaiveDate,
+    group: &str,
+    w: usize,
+    n: usize,
+    pager: &mut Pager,
+    sel: Option<usize>,
+    filter: &str,
+) -> Vec<String> {
     let (s0, e0) = day_bounds(d);
-    let t = window_items(st, d, group);
+    let t = window_items(st, d, group, filter);
     if t.is_empty() {
-        return nothing(vec![]);
+        return if filter.is_empty() {
+            nothing(vec![])
+        } else {
+            vec![dim(&format!("no windows match '{filter}'"))]
+        };
     }
     let ranked = names(&totals(&st.by_group(s0, e0)));
     let code = ranked
@@ -649,7 +683,12 @@ pub fn pages_lines(
         fmt(pages.iter().map(|p| p.2).sum())
     ));
     if pages.is_empty() {
-        return vec![head, String::new(), dim("no pages recorded")];
+        let why = if search.is_empty() {
+            "no pages recorded".to_string()
+        } else {
+            format!("no pages match '{search}'")
+        };
+        return vec![head, String::new(), dim(&why)];
     }
     let tw = (w.saturating_sub(7) * 11 / 20).max(10);
     let uw = w.saturating_sub(7 + tw).max(5);

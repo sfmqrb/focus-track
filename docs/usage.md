@@ -23,12 +23,15 @@ Every list works the same way.
 
 | key | does |
 |---|---|
-| `↑ ↓` `PgUp PgDn` `Home End` | move the selection |
+| `j` `k` / `↑` `↓` | move the selection |
+| `gg` `G` / `Home` `End` | first / last item |
+| `ctrl-d` `ctrl-u` · `ctrl-f` `ctrl-b` / `PgDn` `PgUp` | half a page · a page |
+| `/` | search the list as you type (apps, pages, windows); `⏎` keeps it, `esc` clears it |
 | `⏎` or click | open: an app's details, or a page in your browser |
-| `esc` | back one level (quits from the overview) |
+| `esc` | back one level (clears a search first; quits from the overview) |
 | `tab` · `1`–`7` · `p` | next panel · zoom a panel · pages |
-| `← →` · `t` | previous / next day · today |
-| `c` · `g` | apps ↔ categories · graph mode |
+| `h` `l` / `←` `→` · `t` | previous / next day · today |
+| `c` · `m` | apps ↔ categories · activity graph mode |
 | `?` · `q` | help · quit |
 
 ## Reading the charts

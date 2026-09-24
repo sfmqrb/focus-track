@@ -4,7 +4,7 @@
 //! shows what the keys do *right now*. Every list works the same way: ↑↓ PgUp PgDn Home End move a reversed
 //! selection row, ⏎ opens it, Esc goes back one level, ? shows help.
 
-use crate::render::{DOT, EMPTY, boxed, dim, fit, hints, hstack, paint, theme};
+use crate::render::{DOT, EMPTY, boxed, dim, fit, hints, hstack, paint, theme, vlen};
 use crate::store::{Group, Store, daemon_running, sum, totals};
 use crate::util::{day_bounds, days_before, fmt, today};
 use crate::views::{self, Pager, TODAY_HEAD, day_label};
@@ -41,6 +41,11 @@ pub struct Ui {
     pub page_sel: usize,
     pub win_sel: usize,
     pub opener: fn(&str) -> bool,
+    /// `/` search: the text, which list it narrows ("apps", "pages" or "windows"), and whether you're still typing it
+    pub filter: String,
+    pub filter_for: Option<&'static str>,
+    pub typing: bool,
+    pending_g: bool, // saw one `g`; a second one jumps to the top (vim's gg)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +64,9 @@ pub enum Input {
     Enter,
     Esc,
     Quit,
+    Backspace,
+    HalfUp,
+    HalfDown,
     Wheel(bool, usize, usize), // (up?, x, y)
     Click(usize, usize),
 }
@@ -69,6 +77,8 @@ enum Step {
     Down,
     PgUp,
     PgDn,
+    HalfUp,
+    HalfDown,
     Home,
     End,
 }
@@ -114,6 +124,10 @@ impl Ui {
             page_sel: 0,
             win_sel: 0,
             opener: open_url,
+            filter: String::new(),
+            filter_for: None,
+            typing: false,
+            pending_g: false,
         }
     }
 
@@ -132,6 +146,28 @@ impl Ui {
         self.zoom = None;
         self.pg_windows.reset();
         self.win_sel = 0;
+    }
+
+    /// The search text, if it applies to `list`.
+    fn filter_on(&self, list: &str) -> &str {
+        if self.filter_for == Some(list) { &self.filter } else { "" }
+    }
+
+    fn clear_filter(&mut self) {
+        self.filter.clear();
+        self.filter_for = None;
+        self.typing = false;
+    }
+
+    /// The filter changed: go back to the first match.
+    fn refilter(&mut self) {
+        self.sel = 0;
+        self.sel_app = None;
+        self.page_sel = 0;
+        self.win_sel = 0;
+        for pg in [&mut self.pg_today, &mut self.pg_pages, &mut self.pg_windows] {
+            pg.reset();
+        }
     }
 
     fn zoom_to(&mut self, p: &'static str) {
@@ -159,9 +195,10 @@ fn panel(st: &Store, ui: &mut Ui, name: &str, w: usize, h: Option<usize>) -> (St
                 "by app"
             };
             let sel = ui.sel;
+            let filter = ui.filter_on("apps").to_string();
             (
                 title.into(),
-                views::today_lines(st, d, w, Some(sel), ui.goal, cap, Some(&mut ui.pg_today)),
+                views::today_lines(st, d, w, Some(sel), ui.goal, cap, Some(&mut ui.pg_today), &filter),
             )
         }
         "streaks" => (
@@ -190,9 +227,10 @@ fn panel(st: &Store, ui: &mut Ui, name: &str, w: usize, h: Option<usize>) -> (St
         _ => {
             let (s, e) = day_bounds(d);
             let sel = h.map(|_| ui.page_sel); // only the zoomed pages panel is selectable
+            let filter = ui.filter_on("pages").to_string();
             (
                 "pages".into(),
-                views::pages_lines(st, s, e, w, h.unwrap_or(12), "", &mut ui.pg_pages, sel),
+                views::pages_lines(st, s, e, w, h.unwrap_or(12), &filter, &mut ui.pg_pages, sel),
             )
         }
     }
@@ -235,12 +273,31 @@ fn header(st: &Store, ui: &Ui, w: usize) -> String {
 
 /// The key bar: what the keys do in the current view.
 fn key_bar(ui: &Ui, w: usize) -> String {
+    if ui.typing {
+        let th = theme();
+        let prompt = paint(&format!("1;{}", th.accent), "/") + &ui.filter + &paint(&th.accent, "█");
+        let rest = hints(
+            &[("⏎", "keep"), ("esc", "clear"), ("↑↓", "move")],
+            w.saturating_sub(vlen(&prompt) + 4),
+        );
+        return fit(&format!(" {prompt}   {rest}"), w);
+    }
+    if !ui.filter.is_empty() {
+        let th = theme();
+        let shown = paint(&format!("1;{}", th.accent), &format!("/{}", ui.filter));
+        let rest = hints(
+            &[("esc", "clear search"), ("/", "new search"), ("?", "help"), ("q", "quit")],
+            w.saturating_sub(vlen(&shown) + 4),
+        );
+        return fit(&format!(" {shown}   {rest}"), w);
+    }
     let keys: &[(&str, &str)] = if ui.help {
         &[("esc", "close help"), ("q", "quit")]
     } else if ui.detail.is_some() {
         &[
             ("↑↓", "select window"),
             ("⏎", "open link"),
+            ("/", "search"),
             ("esc", "back"),
             ("←→", "day"),
             ("?", "help"),
@@ -251,6 +308,8 @@ fn key_bar(ui: &Ui, w: usize) -> String {
             Some("today") => &[
                 ("↑↓", "select"),
                 ("⏎", "details"),
+                ("/", "search"),
+                ("gg G", "top/bottom"),
                 ("c", "apps/categories"),
                 ("esc", "back"),
                 ("←→", "day"),
@@ -259,21 +318,24 @@ fn key_bar(ui: &Ui, w: usize) -> String {
             Some("pages") => &[
                 ("↑↓", "select"),
                 ("⏎", "open in browser"),
+                ("/", "search"),
+                ("gg G", "top/bottom"),
                 ("esc", "back"),
                 ("←→", "day"),
                 ("?", "help"),
             ],
             Some("timeline") => &[("↑↓", "scroll"), ("esc", "back"), ("←→", "day"), ("?", "help")],
-            Some("activity") => &[("g", "switches/apps"), ("esc", "back"), ("←→", "day"), ("?", "help")],
+            Some("activity") => &[("m", "switches/apps"), ("esc", "back"), ("←→", "day"), ("?", "help")],
             Some(_) => &[("esc", "back"), ("←→", "day"), ("?", "help"), ("q", "quit")],
             None => &[
                 ("↑↓", "select"),
                 ("⏎", "details"),
+                ("/", "search"),
                 ("tab", "panel"),
                 ("1-7", "zoom"),
                 ("←→", "day"),
                 ("c", "categories"),
-                ("g", "graph"),
+                ("m", "graph"),
                 ("?", "help"),
                 ("q", "quit"),
             ],
@@ -289,8 +351,10 @@ fn help_lines() -> Vec<String> {
     vec![
         dim("move"),
         k("↑ ↓  j k", "select the previous / next item in the list"),
-        k("PgUp PgDn", "a page at a time"),
-        k("Home End", "first / last item"),
+        k("gg  G", "first / last item (also Home End)"),
+        k("ctrl-d ctrl-u", "half a page down / up"),
+        k("PgDn PgUp", "a page at a time (also ctrl-f ctrl-b)"),
+        k("/", "search the list as you type: ⏎ keeps it, esc clears it"),
         k("⏎  click", "open: an app's details, or a page in your browser"),
         k("esc  0", "back one level (quits from the overview)"),
         String::new(),
@@ -300,7 +364,7 @@ fn help_lines() -> Vec<String> {
         k("p", "pages you visited"),
         k("← →  h l  t", "previous / next day, today (or the mouse wheel over a panel)"),
         k("c", "group by app or by category (categories are set in the config)"),
-        k("g", "activity graph: app switching or time per app"),
+        k("m", "activity graph mode: app switching or time per app"),
         k("q  ctrl-c", "quit"),
         String::new(),
         dim("how to read it"),
@@ -335,9 +399,10 @@ fn body(st: &Store, ui: &mut Ui, w: usize, h: usize) -> Vec<String> {
         ));
         let rest = h.saturating_sub(out.len());
         if rest >= 4 {
-            let n = views::window_items(st, ui.d, &app).len();
+            let n = views::window_items(st, ui.d, &app, ui.filter_on("windows")).len();
             ui.win_sel = ui.win_sel.min(n.saturating_sub(1));
-            let lines = views::windows_lines(st, ui.d, &app, w - 4, rest - 2, &mut ui.pg_windows, Some(ui.win_sel));
+            let filter = ui.filter_on("windows").to_string();
+            let lines = views::windows_lines(st, ui.d, &app, w - 4, rest - 2, &mut ui.pg_windows, Some(ui.win_sel), &filter);
             out.extend(boxed("windows", &lines, w, Some(rest), "", true));
         }
         out.truncate(h);
@@ -346,7 +411,7 @@ fn body(st: &Store, ui: &mut Ui, w: usize, h: usize) -> Vec<String> {
     if let Some(z) = ui.zoom {
         if z == "pages" {
             let (s, e) = day_bounds(ui.d);
-            let n = views::page_items(st, s, e, "").0.len();
+            let n = views::page_items(st, s, e, ui.filter_on("pages")).0.len();
             ui.page_sel = ui.page_sel.min(n.saturating_sub(1));
         }
         let (title, lines) = panel(st, ui, z, w - 4, Some(h - 2));
@@ -411,14 +476,16 @@ fn body(st: &Store, ui: &mut Ui, w: usize, h: usize) -> Vec<String> {
     out
 }
 
-pub fn frame(st: &Store, ui: &mut Ui, w: usize, h: usize) -> Vec<String> {
-    ui.rects.clear();
-    if w < MIN_W || h < MIN_H {
-        let msg = format!("terminal too small ({w}x{h}): focus-track needs at least {MIN_W}x{MIN_H}");
-        return vec![fit(&dim(&msg), w)];
-    }
+/// The app list as it is right now (day, grouping, search), with the selection following its app.
+/// Called before every draw and before anything moves in it, since several keys can arrive between two draws.
+fn refresh_apps(st: &Store, ui: &mut Ui) {
     let (s, e) = day_bounds(ui.d);
-    ui.apps = totals(&st.by_group(s, e)).into_iter().map(|x| x.0).collect();
+    let f = ui.filter_on("apps").to_string();
+    ui.apps = totals(&st.by_group(s, e))
+        .into_iter()
+        .map(|x| x.0)
+        .filter(|a| views::matches(a, &f))
+        .collect();
     match ui.sel_app.as_ref().and_then(|a| ui.apps.iter().position(|x| x == a)) {
         Some(i) => ui.sel = i,
         None => {
@@ -426,6 +493,15 @@ pub fn frame(st: &Store, ui: &mut Ui, w: usize, h: usize) -> Vec<String> {
             ui.sel_app = ui.apps.get(ui.sel).cloned();
         }
     }
+}
+
+pub fn frame(st: &Store, ui: &mut Ui, w: usize, h: usize) -> Vec<String> {
+    ui.rects.clear();
+    if w < MIN_W || h < MIN_H {
+        let msg = format!("terminal too small ({w}x{h}): focus-track needs at least {MIN_W}x{MIN_H}");
+        return vec![fit(&dim(&msg), w)];
+    }
+    refresh_apps(st, ui);
     let mut out = vec![header(st, ui, w)];
     let mut b = body(st, ui, w, h - CHROME);
     for r in &mut ui.rects {
@@ -460,6 +536,8 @@ fn moved(cur: usize, len: usize, page: usize, s: Step) -> usize {
         Step::Down => cur + 1,
         Step::PgUp => cur - page,
         Step::PgDn => cur + page,
+        Step::HalfUp => cur - (page / 2).max(1),
+        Step::HalfDown => cur + (page / 2).max(1),
         Step::Home => 0,
         Step::End => last,
     };
@@ -469,6 +547,7 @@ fn moved(cur: usize, len: usize, page: usize, s: Step) -> usize {
 fn step(st: &Store, ui: &mut Ui, s: Step) {
     match target(ui) {
         Some("apps") => {
+            refresh_apps(st, ui);
             if ui.apps.is_empty() {
                 return;
             }
@@ -480,11 +559,14 @@ fn step(st: &Store, ui: &mut Ui, s: Step) {
         }
         Some("pages") => {
             let (a, b) = day_bounds(ui.d);
-            let n = views::page_items(st, a, b, "").0.len();
+            let n = views::page_items(st, a, b, ui.filter_on("pages")).0.len();
             ui.page_sel = moved(ui.page_sel, n, ui.pg_pages.n, s);
         }
         Some("windows") => {
-            let n = ui.detail.as_ref().map_or(0, |app| views::window_items(st, ui.d, app).len());
+            let n = ui
+                .detail
+                .as_ref()
+                .map_or(0, |app| views::window_items(st, ui.d, app, ui.filter_on("windows")).len());
             ui.win_sel = moved(ui.win_sel, n, ui.pg_windows.n, s);
         }
         Some("timeline") => {
@@ -494,6 +576,8 @@ fn step(st: &Store, ui: &mut Ui, s: Step) {
                 Step::Down => 1,
                 Step::PgUp => -page,
                 Step::PgDn => page,
+                Step::HalfUp => -(page / 2).max(1),
+                Step::HalfDown => (page / 2).max(1),
                 Step::Home => i64::MIN / 2,
                 Step::End => i64::MAX / 2,
             });
@@ -504,8 +588,9 @@ fn step(st: &Store, ui: &mut Ui, s: Step) {
 
 /// ⏎ on the current selection.
 fn enter(st: &Store, ui: &mut Ui) {
+    refresh_apps(st, ui);
     if let Some(app) = ui.detail.clone() {
-        let items = views::window_items(st, ui.d, &app);
+        let items = views::window_items(st, ui.d, &app, ui.filter_on("windows"));
         if let Some(url) = items.get(ui.win_sel).and_then(|(k, _)| k.split_once('\t')).map(|x| x.1) {
             if safe_url(url) {
                 (ui.opener)(url);
@@ -516,7 +601,7 @@ fn enter(st: &Store, ui: &mut Ui) {
     match ui.zoom {
         Some("pages") => {
             let (a, b) = day_bounds(ui.d);
-            if let Some((url, _, _)) = views::page_items(st, a, b, "").0.get(ui.page_sel) {
+            if let Some((url, _, _)) = views::page_items(st, a, b, ui.filter_on("pages")).0.get(ui.page_sel) {
                 if safe_url(url) {
                     (ui.opener)(url);
                 }
@@ -573,6 +658,14 @@ fn click(ui: &mut Ui, x: usize, y: usize) {
 
 /// Apply one key or mouse event. Returns false to quit.
 pub fn handle(st: &Store, ui: &mut Ui, input: Input) -> bool {
+    let go_on = handle_input(st, ui, input);
+    if ui.filter_for.is_some() && target(ui) != ui.filter_for {
+        ui.clear_filter();
+    }
+    go_on
+}
+
+fn handle_input(st: &Store, ui: &mut Ui, input: Input) -> bool {
     if ui.help {
         // the help screen: Esc, ?, ⏎ or a click close it; q still quits; everything else is ignored
         match input {
@@ -582,9 +675,66 @@ pub fn handle(st: &Store, ui: &mut Ui, input: Input) -> bool {
         }
         return true;
     }
+    if ui.typing {
+        // typing a search: every character goes into it, even j, k or q
+        match input {
+            Input::Quit => return false,
+            Input::Esc => ui.clear_filter(),
+            Input::Enter => {
+                ui.typing = false;
+                if ui.filter.is_empty() {
+                    ui.filter_for = None;
+                }
+            }
+            Input::Backspace => {
+                if ui.filter.pop().is_none() {
+                    ui.clear_filter(); // backspace on an empty search leaves it, like vim
+                }
+                ui.refilter();
+            }
+            Input::Char(c) => {
+                ui.filter.push(c);
+                ui.refilter();
+            }
+            Input::Up | Input::Down | Input::PgUp | Input::PgDn | Input::Home | Input::End => {
+                let s = match input {
+                    Input::Up => Step::Up,
+                    Input::Down => Step::Down,
+                    Input::PgUp => Step::PgUp,
+                    Input::PgDn => Step::PgDn,
+                    Input::Home => Step::Home,
+                    _ => Step::End,
+                };
+                step(st, ui, s);
+            }
+            _ => {}
+        }
+        return true;
+    }
+    if std::mem::take(&mut ui.pending_g) && input == Input::Char('g') {
+        step(st, ui, Step::Home); // gg
+        return true;
+    }
     match input {
         Input::Quit | Input::Char('q' | 'Q') => return false,
         Input::Char('?') => ui.help = true,
+        Input::Char('g') => ui.pending_g = true,
+        Input::Char('G') => step(st, ui, Step::End),
+        Input::HalfDown => step(st, ui, Step::HalfDown),
+        Input::HalfUp => step(st, ui, Step::HalfUp),
+        Input::Char('/') => {
+            let list = target(ui).filter(|t| *t != "timeline");
+            if let Some(list) = list {
+                ui.filter.clear();
+                ui.filter_for = Some(list);
+                ui.typing = true;
+                ui.refilter();
+            }
+        }
+        Input::Esc if !ui.filter.is_empty() => {
+            ui.clear_filter(); // Esc first clears a search, then goes back
+            ui.refilter();
+        }
         Input::Esc | Input::Char('0') => {
             if ui.detail.is_some() {
                 ui.detail = None;
@@ -615,7 +765,7 @@ pub fn handle(st: &Store, ui: &mut Ui, input: Input) -> bool {
         Input::Enter => enter(st, ui),
         Input::Char(c @ '1'..='7') if ui.detail.is_none() => ui.zoom_to(PANELS[c as usize - '1' as usize]),
         Input::Char('p') if ui.detail.is_none() => ui.zoom_to("pages"),
-        Input::Char('g') => ui.graph = if ui.graph == "switches" { "apps" } else { "switches" },
+        Input::Char('m') => ui.graph = if ui.graph == "switches" { "apps" } else { "switches" },
         Input::Char('c') if ui.detail.is_none() => {
             st.group.set(if st.group.get() == Group::Category {
                 Group::App
@@ -645,6 +795,11 @@ fn translate(ev: Event) -> Option<Input> {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => Some(match k.code {
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => Input::Quit,
+            KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => Input::HalfDown,
+            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => Input::HalfUp,
+            KeyCode::Char('f') if k.modifiers.contains(KeyModifiers::CONTROL) => Input::PgDn,
+            KeyCode::Char('b') if k.modifiers.contains(KeyModifiers::CONTROL) => Input::PgUp,
+            KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => return None,
             KeyCode::Char(c) => Input::Char(c),
             KeyCode::Up => Input::Up,
             KeyCode::Down => Input::Down,
@@ -658,6 +813,7 @@ fn translate(ev: Event) -> Option<Input> {
             KeyCode::BackTab => Input::BackTab,
             KeyCode::Enter => Input::Enter,
             KeyCode::Esc => Input::Esc,
+            KeyCode::Backspace => Input::Backspace,
             _ => return None,
         }),
         Event::Mouse(m) => {
@@ -712,26 +868,32 @@ pub fn run(st: &Store, ui: &mut Ui) -> anyhow::Result<()> {
         crossterm::event::EnableMouseCapture
     )?;
     loop {
+        st.expire(2.0); // new data at most every 2 s; moving around reuses what was read
         let (w, h) = crossterm::terminal::size().map_or((80, 24), |(w, h)| (w as usize, h as usize));
         let lines = frame(st, ui, w, h);
         write!(out, "\x1b[H{}\x1b[K\x1b[J", lines.join("\x1b[K\r\n"))?;
         out.flush()?;
-        // redraw every 2 s (live data, clock), or as soon as something relevant happens
+        // wait up to 2 s (then redraw for live data and the clock), or for input
         if !event::poll(Duration::from_secs(2))? {
             continue;
         }
+        // Handle every key that's already waiting before drawing again. A held key sends ~30 repeats a
+        // second; drawing after each one let them pile up, so the list kept moving after the key was let go.
+        let mut changed = false;
         loop {
             let ev = event::read()?;
-            let resized = matches!(ev, Event::Resize(..));
-            match translate(ev) {
-                Some(input) if !handle(st, ui, input) => return Ok(()),
-                Some(_) => break,
-                None if resized => break,
-                None => {}
+            changed |= matches!(ev, Event::Resize(..));
+            if let Some(input) = translate(ev) {
+                changed = true;
+                if !handle(st, ui, input) {
+                    return Ok(());
+                }
             }
-            // mouse motion and other noise: keep reading without redrawing
-            if !event::poll(Duration::from_secs(2))? {
-                break;
+            if !event::poll(Duration::ZERO)? {
+                // nothing more queued: draw, unless it was only mouse motion (then keep waiting)
+                if changed || !event::poll(Duration::from_secs(2))? {
+                    break;
+                }
             }
         }
     }
@@ -804,8 +966,8 @@ mod tests {
         assert!(strip_ansi(&f[0]).contains("focus-track"), "header on top");
         let bar = strip_ansi(&f[h - 1]);
         assert!(
-            bar.contains("? help") || bar.contains("close help"),
-            "key bar at the bottom always offers help: {bar}"
+            bar.contains("? help") || bar.contains("close help") || bar.contains("⏎ keep"),
+            "key bar at the bottom always offers help (or, while typing a search, how to finish it): {bar}"
         );
         f
     }
@@ -979,6 +1141,120 @@ mod tests {
         assert!(!safe_url("https://x.com/\x1b]8;;"));
         assert!(!safe_url("https://x.com/ --flag"));
         assert!(!safe_url("https://"));
+    }
+
+    #[test]
+    fn vim_keys() {
+        set_tty(true);
+        let st = stress_store(yesterday());
+        let mut ui = new_ui();
+        handle(&st, &mut ui, Input::Char('1'));
+        render(&st, &mut ui, 120, 42);
+        handle(&st, &mut ui, Input::Char('G'));
+        assert_eq!(ui.sel, 39, "G: last");
+        handle(&st, &mut ui, Input::Char('g'));
+        assert_eq!(ui.sel, 39, "a single g waits");
+        handle(&st, &mut ui, Input::Char('g'));
+        assert_eq!(ui.sel, 0, "gg: first");
+        handle(&st, &mut ui, Input::Char('g'));
+        handle(&st, &mut ui, Input::Char('j'));
+        assert_eq!(ui.sel, 1, "g then j: the g is dropped, j still moves");
+        handle(&st, &mut ui, Input::Char('g'));
+        assert_eq!(ui.sel, 1, "and that g didn't pair with an older one");
+        render(&st, &mut ui, 120, 42);
+        let page = ui.pg_today.n;
+        handle(&st, &mut ui, Input::HalfDown);
+        assert_eq!(ui.sel, 1 + page / 2, "ctrl-d: half a page");
+        handle(&st, &mut ui, Input::HalfUp);
+        assert_eq!(ui.sel, 1, "ctrl-u: back");
+        // graph mode moved from g to m
+        let mut ui = new_ui();
+        handle(&st, &mut ui, Input::Char('m'));
+        assert_eq!(ui.graph, "apps");
+        handle(&st, &mut ui, Input::Char('g'));
+        handle(&st, &mut ui, Input::Char('g'));
+        assert_eq!(ui.graph, "apps", "g no longer changes the graph");
+    }
+
+    #[test]
+    fn search_narrows_each_list() {
+        set_tty(true);
+        let st = stress_store(yesterday());
+        let mut ui = new_ui();
+        render(&st, &mut ui, 120, 42);
+        // apps: typed characters (even j, k, q) go into the search, and the list narrows as you type
+        handle(&st, &mut ui, Input::Char('/'));
+        assert!(ui.typing);
+        for c in "app3".chars() {
+            handle(&st, &mut ui, Input::Char(c));
+        }
+        let f = render(&st, &mut ui, 120, 42);
+        assert_eq!(
+            ui.apps,
+            [
+                "app30", "app31", "app32", "app33", "app34", "app35", "app36", "app37", "app38", "app39"
+            ]
+        );
+        assert!(strip_ansi(&f[41]).contains("/app3"), "the key bar shows what you typed");
+        handle(&st, &mut ui, Input::Char('9'));
+        render(&st, &mut ui, 120, 42);
+        assert_eq!(ui.apps, ["app39"]);
+        handle(&st, &mut ui, Input::Backspace);
+        handle(&st, &mut ui, Input::Enter);
+        assert!(!ui.typing && ui.filter == "app3", "⏎ keeps the search");
+        handle(&st, &mut ui, Input::Char('j'));
+        render(&st, &mut ui, 120, 42);
+        assert_eq!(ui.apps[ui.sel], "app31", "j moves within the matches");
+        assert!(
+            handle(&st, &mut ui, Input::Esc) && ui.filter.is_empty() && ui.zoom.is_none(),
+            "Esc clears the search first"
+        );
+        render(&st, &mut ui, 120, 42);
+        assert_eq!(ui.apps.len(), 40);
+        // q while typing is text, not quit
+        handle(&st, &mut ui, Input::Char('/'));
+        assert!(handle(&st, &mut ui, Input::Char('q')), "q is part of the search");
+        handle(&st, &mut ui, Input::Esc);
+        assert!(!ui.typing && ui.filter.is_empty());
+        // no matches
+        handle(&st, &mut ui, Input::Char('/'));
+        for c in "zzz".chars() {
+            handle(&st, &mut ui, Input::Char(c));
+        }
+        assert!(text(&render(&st, &mut ui, 120, 42)).contains("no apps match 'zzz'"));
+        handle(&st, &mut ui, Input::Esc);
+
+        // pages
+        let mut ui = new_ui();
+        render(&st, &mut ui, 120, 42);
+        handle(&st, &mut ui, Input::Char('p'));
+        handle(&st, &mut ui, Input::Char('/'));
+        for c in "page 1".chars() {
+            handle(&st, &mut ui, Input::Char(c));
+        }
+        handle(&st, &mut ui, Input::Enter);
+        let t = text(&render(&st, &mut ui, 120, 42));
+        assert!(t.contains("Page 10 title") && !t.contains("Page 20 title") && t.contains("matching 'page 1'"));
+        handle(&st, &mut ui, Input::Char('G'));
+        let (a, b) = day_bounds(yesterday());
+        let shown = views::page_items(&st, a, b, "page 1").0;
+        assert_eq!(ui.page_sel, shown.len() - 1, "G goes to the last match");
+        // leaving the list drops its search
+        handle(&st, &mut ui, Input::Esc);
+        handle(&st, &mut ui, Input::Esc);
+        assert!(ui.zoom.is_none() && ui.filter.is_empty());
+
+        // windows of one app
+        let mut ui = new_ui();
+        ui.sel_app = Some("app01".into());
+        render(&st, &mut ui, 100, 32);
+        handle(&st, &mut ui, Input::Enter);
+        handle(&st, &mut ui, Input::Char('/'));
+        for c in "file3".chars() {
+            handle(&st, &mut ui, Input::Char(c));
+        }
+        let t = text(&render(&st, &mut ui, 100, 32));
+        assert!(t.contains("vim file3.py") && t.contains("vim file30.py") && !t.contains("vim file4.py"));
     }
 
     #[test]
@@ -1166,5 +1442,37 @@ mod tests {
         }
         let small = frame(&st, &mut ui, 50, 10);
         assert!(strip_ansi(&small[0]).contains("too small"));
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// FOCUS_TRACK_DB=<copy of a real db> cargo test --release bench_frames -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_frames() {
+        crate::render::set_tty(true);
+        let st = Store::open().unwrap();
+        let mut ui = Ui::new(days_before(today(), 1), 8, 6.0 * 3600.0);
+        let time = |label: &str, ui: &mut Ui| {
+            let t = std::time::Instant::now();
+            for _ in 0..5 {
+                frame(&st, ui, 160, 50);
+            }
+            eprintln!("{label:<22} {:>7.1} ms per frame", t.elapsed().as_secs_f64() * 1000.0 / 5.0);
+        };
+        time("overview", &mut ui);
+        handle(&st, &mut ui, Input::Char('p'));
+        time("pages (zoomed)", &mut ui);
+        let t = std::time::Instant::now();
+        handle(&st, &mut ui, Input::Down);
+        eprintln!("{:<22} {:>7.1} ms", "one j in pages", t.elapsed().as_secs_f64() * 1000.0);
+        handle(&st, &mut ui, Input::Esc);
+        ui.sel_app = Some("Browser".into());
+        frame(&st, &mut ui, 160, 50);
+        handle(&st, &mut ui, Input::Enter);
+        time("app detail (Browser)", &mut ui);
     }
 }

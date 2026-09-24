@@ -5,13 +5,14 @@
 use crate::config::Config;
 use crate::util::{now, sanitize, state_dir};
 use rusqlite::Connection;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 pub const HEARTBEAT: f64 = 300.0; // the daemon re-logs the focused app this often...
@@ -38,7 +39,14 @@ pub struct Store {
     pub cfg: Config,
     pub group: Cell<Group>,
     pub path: PathBuf,
+    /// Rows already read for a time range, so redraws while you move around don't hit the database again.
+    /// Dropped by `expire` (the dashboard does it every couple of seconds, which is how new data shows up).
+    cache: RefCell<HashMap<(u64, u64), Rc<Rows>>>,
+    cache_at: Cell<f64>,
 }
+
+/// (ts, app, title, url, mode) rows of a range (plus the row before it), and when the next row after it starts.
+type Rows = (Vec<(f64, String, String, String, String)>, Option<f64>);
 
 pub fn db_path() -> PathBuf {
     std::env::var_os("FOCUS_TRACK_DB").map_or_else(|| state_dir().join("focus-track.db"), PathBuf::from)
@@ -102,6 +110,8 @@ impl Store {
             cfg: Config::load(),
             group: Cell::new(Group::App),
             path,
+            cache: RefCell::default(),
+            cache_at: Cell::new(0.0),
         })
     }
 
@@ -112,13 +122,26 @@ impl Store {
             cfg,
             group: Cell::new(Group::App),
             path: PathBuf::from(":memory:"),
+            cache: RefCell::default(),
+            cache_at: Cell::new(0.0),
         }
     }
 
-    /// Spans in [start, end), keyed by `key(row)` ("" = not counted).
-    pub fn spans(&self, start: f64, end: f64, key: &dyn Fn(&Row) -> String) -> Vec<Span> {
+    /// Forget cached rows older than `max_age` seconds, so new data is read again.
+    pub fn expire(&self, max_age: f64) {
+        if now() - self.cache_at.get() > max_age {
+            self.cache.borrow_mut().clear();
+            self.cache_at.set(now());
+        }
+    }
+
+    fn rows(&self, start: f64, end: f64) -> Rc<Rows> {
+        let key = (start.to_bits(), end.to_bits());
+        if let Some(r) = self.cache.borrow().get(&key) {
+            return r.clone();
+        }
         const COLS: &str = "ts, app, COALESCE(title, ''), COALESCE(url, ''), COALESCE(mode, '')";
-        let mut rows: Vec<(f64, String)> = Vec::new();
+        let mut rows = Vec::new();
         let mut take = |sql: String, params: &[f64]| {
             let Ok(mut stmt) = self.con.prepare_cached(&sql) else { return };
             let it = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -132,16 +155,7 @@ impl Store {
             });
             if let Ok(it) = it {
                 for (ts, app, title, url, mode) in it.flatten() {
-                    let (app, title, url) = (sanitize(&app), sanitize(&title), sanitize(&url));
-                    rows.push((
-                        ts,
-                        key(&Row {
-                            app: &app,
-                            title: &title,
-                            url: &url,
-                            mode: &mode,
-                        }),
-                    ));
+                    rows.push((ts, sanitize(&app), sanitize(&title), sanitize(&url), mode));
                 }
             }
         };
@@ -155,7 +169,23 @@ impl Store {
             .query_row("SELECT min(ts) FROM focus WHERE ts >= ?1", [end], |r| r.get(0))
             .ok()
             .flatten();
-        clip(&rows, start, end, after.unwrap_or_else(now))
+        let r = Rc::new((rows, after));
+        self.cache.borrow_mut().insert(key, r.clone());
+        r
+    }
+
+    /// Spans in [start, end), keyed by `key(row)` ("" = not counted).
+    pub fn spans(&self, start: f64, end: f64, key: &dyn Fn(&Row) -> String) -> Vec<Span> {
+        let rows = self.rows(start, end);
+        let keyed: Vec<(f64, String)> = rows
+            .0
+            .iter()
+            .map(|(ts, app, title, url, mode)| {
+                let row = Row { app, title, url, mode };
+                (*ts, key(&row))
+            })
+            .collect();
+        clip(&keyed, start, end, rows.1.unwrap_or_else(now))
     }
 
     /// What every view groups by: the app's display name, or its category.
@@ -314,6 +344,21 @@ mod tests {
             merged(&clip(&blips, 0.0, 300.0, 300.0)),
             vec![(0.0, 200.0, "code".into()), (200.0, 300.0, "mpv".into())]
         );
+    }
+
+    #[test]
+    fn cache_serves_repeats_and_expires() {
+        let st = test_store("");
+        st.con
+            .execute_batch("INSERT INTO focus (ts, app) VALUES (0, 'a'), (100, '')")
+            .unwrap();
+        assert_eq!(totals(&st.by_group(0.0, 200.0)), vec![("a".into(), 100.0)]);
+        st.con
+            .execute_batch("INSERT INTO focus (ts, app) VALUES (100.5, 'b'), (150, '')")
+            .unwrap();
+        assert_eq!(totals(&st.by_group(0.0, 200.0)).len(), 1, "cached: the new row isn't read yet");
+        st.expire(0.0);
+        assert_eq!(totals(&st.by_group(0.0, 200.0)).len(), 2, "after expiry the new row shows up");
     }
 
     #[test]
