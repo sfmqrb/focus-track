@@ -3,7 +3,7 @@
 //! One row = "from this moment on, this is what had focus". `app` = "" means away / nothing focused.
 
 use crate::config::Config;
-use crate::util::{now, sanitize, state_dir};
+use crate::util::{display_text, now, sanitize, state_dir};
 use rusqlite::Connection;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
@@ -155,7 +155,7 @@ impl Store {
             });
             if let Ok(it) = it {
                 for (ts, app, title, url, mode) in it.flatten() {
-                    rows.push((ts, sanitize(&app), sanitize(&title), sanitize(&url), mode));
+                    rows.push((ts, display_text(&app), display_text(&title), sanitize(&url), mode)); // never alter a URL
                 }
             }
         };

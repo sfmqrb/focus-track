@@ -4,7 +4,7 @@ use crate::util::rhe;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 static TTY: AtomicBool = AtomicBool::new(false);
 
@@ -186,22 +186,30 @@ pub fn fit(s: &str, w: usize) -> String {
     if n <= w {
         return format!("{s}{}", " ".repeat(w - n));
     }
-    let (mut out, mut used, mut in_link) = (String::new(), 0, false);
+    // The text kept so far is measured as a whole, never one character at a time: terminals draw emoji
+    // with variation selectors, skin tones, joiners and flags as one glyph, so their cells are not the sum
+    // of the characters'. Text stops at the first character that would overflow.
+    let (mut out, mut kept, mut full, mut in_link) = (String::new(), String::new(), false, false);
     for (esc, text) in pieces(s) {
         if esc {
             if text.starts_with("\x1b]8;;") {
                 in_link = !text.starts_with("\x1b]8;;\x1b");
             }
-            out.push_str(&text);
+            out.push_str(&text); // colors and links are always kept, so they close properly
             continue;
         }
-        let cw = text.chars().next().and_then(UnicodeWidthChar::width).unwrap_or(0);
-        if used + cw <= w {
+        if full {
+            continue;
+        }
+        kept.push_str(&text);
+        if kept.width() > w {
+            kept.truncate(kept.len() - text.len());
+            full = true;
+        } else {
             out.push_str(&text);
-            used += cw;
         }
     }
-    out.push_str(&" ".repeat(w - used));
+    out.push_str(&" ".repeat(w - kept.width()));
     if tty() {
         out.push_str("\x1b[0m");
         if in_link {
@@ -405,6 +413,73 @@ mod tests {
         let all = lines.iter().map(|l| strip_ansi(l)).collect::<Vec<_>>().join(" ");
         assert!(names.iter().all(|n| all.contains(n.as_str())), "every name is shown");
         assert_eq!(legend_lines(&[], 40), vec![String::new()]);
+    }
+
+    /// Text that terminals draw in a different number of cells than a per-character count suggests:
+    /// emoji with variation selectors, skin tones, joined emoji, flags, keycaps, direction marks, Arabic script.
+    const TRICKY: &[&str] = &[
+        "❤️ A sample song title with a heart #song",
+        "Rematch is coming soon ☠️🔥 #sports #shorts",
+        "Two friends arm wrestling 🤲🏻❤️ - YouTube",
+        "👰\u{200d}♀️👈 bride and friends #shorts #love",
+        "🇺🇸 flags 🇵🇸 and keycaps 1️⃣2️⃣3️⃣ in one title",
+        "(4) \u{200e}\u{2068}name here\u{2069} @ \u{200e}\u{2068}other\u{2069} (123)",
+        "سلام دنیا — LibreOffice Writer",
+        "日本語のタイトルとemoji😂😂😂 mixed 中文",
+        "e\u{301}\u{301} combining marks and Zalgo t\u{338}\u{338}ext",
+    ];
+
+    #[test]
+    fn fit_is_exact_for_text_that_terminals_draw_oddly() {
+        set_tty(true);
+        for s in TRICKY {
+            for w in 0..80 {
+                let f = fit(s, w);
+                assert_eq!(vlen(&f), w, "fit({s:?}, {w}) is {} cells wide: {:?}", vlen(&f), strip_ansi(&f));
+            }
+            // cutting only ever shortens: what's left is the start of the original
+            let cut = strip_ansi(&fit(s, 12)).trim_end().to_string();
+            assert!(s.starts_with(&cut) || cut.is_empty(), "{s:?} -> {cut:?}");
+        }
+        // pseudo-random mixes of all of it, inside colors and links, must also come out exact
+        let atoms = [
+            "a",
+            "Z",
+            " ",
+            "é",
+            "❤\u{fe0f}",
+            "☠\u{fe0f}",
+            "🤲\u{1f3fb}",
+            "👰\u{200d}♀\u{fe0f}",
+            "😂",
+            "🇺🇸",
+            "1\u{fe0f}\u{20e3}",
+            "日",
+            "ب",
+            "\u{200e}",
+            "\u{2068}",
+            "\u{301}",
+        ];
+        let mut seed = 0x9e37_79b9_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for _ in 0..400 {
+            let text: String = (0..next(30)).map(|_| atoms[next(atoms.len())]).collect();
+            let styled = match next(3) {
+                0 => text.clone(),
+                1 => paint("1;34", &text),
+                _ => link("https://example.org/x", &paint("2", &text)),
+            };
+            let w = next(40);
+            let f = fit(&styled, w);
+            assert_eq!(vlen(&f), w, "fit({styled:?}, {w}) -> {:?}", strip_ansi(&f));
+            let boxed_line = &boxed("t", &[styled], 44, None, "", false)[1];
+            assert_eq!(vlen(boxed_line), 44, "{:?}", strip_ansi(boxed_line));
+        }
     }
 
     #[test]

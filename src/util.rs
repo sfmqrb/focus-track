@@ -118,6 +118,20 @@ pub fn run(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> {
     reader.join().ok()
 }
 
+/// Text from another program, ready to draw: control characters removed, and invisible direction and
+/// zero-width marks dropped. Terminals don't reorder or join text with them, so they only show up as
+/// gaps or boxes and confuse column widths. (Emoji joiners and Persian half-spaces are kept.)
+pub fn display_text(s: &str) -> String {
+    s.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c,
+                    '\u{00ad}' | '\u{061c}' | '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+        })
+        .collect()
+}
+
 /// Drop control characters (ESC, BEL, newlines...) from text that other programs control, such as
 /// window titles and URLs, so it can't inject escape sequences into the terminal.
 pub fn sanitize(s: &str) -> String {
@@ -137,6 +151,30 @@ mod tests {
         assert_eq!(rhe(1.5), 2.0);
         assert_eq!(rhe(2.4), 2.0);
         assert_eq!(sanitize("a\x1b]8;;evil\x07b\n"), "a]8;;evilb");
+    }
+
+    #[test]
+    fn display_text_drops_invisible_marks_only() {
+        assert_eq!(
+            display_text("(4) \u{200e}\u{2068}name\u{2069} @ \u{200e}\u{2068}x\u{2069}"),
+            "(4) name @ x"
+        );
+        assert_eq!(
+            display_text("a\u{200b}b\u{feff}c\u{202e}d\u{00ad}e\x1b[31m"),
+            "abcde[31m",
+            "zero-width, override, BOM, soft hyphen, ESC"
+        );
+        for keep in [
+            "❤\u{fe0f}",
+            "👰\u{200d}♀\u{fe0f}",
+            "🤲\u{1f3fb}",
+            "می\u{200c}خواهم",
+            "日本語",
+            "é",
+            "e\u{301}",
+        ] {
+            assert_eq!(display_text(keep), keep, "{keep:?} must be left alone");
+        }
     }
 
     #[test]

@@ -1228,6 +1228,63 @@ mod tests {
         assert_eq!(ui.d, today());
     }
 
+    /// Long page titles full of emoji (variation selectors, skin tones, joiners, flags), Persian text with
+    /// invisible direction marks, and CJK: every row of every list must keep its right border in line.
+    #[test]
+    fn odd_text_keeps_lists_aligned() {
+        set_tty(true);
+        let st = test_store("");
+        let d = yesterday();
+        let titles = [
+            "Satisfying restoration of an old table ✨✨✨ #woodworking #shorts #fyp #diy - YouTube",
+            "Rematch is coming soon ☠️🔥 #sports #rivalry #highlights #shorts #fyp #viral - YouTube",
+            "Two friends arm wrestling 🤲🏻❤️ and family 👨\u{200d}👩\u{200d}👧 - YouTube",
+            "🇺🇸 🇵🇸 flags and keycaps 1️⃣2️⃣3️⃣ in one very long title that has to be cut somewhere",
+            "(4) \u{200e}\u{2068}سلام دنیا\u{2069} @ \u{200e}\u{2068}someone\u{2069} (123)",
+            "日本語のとても長いタイトルとemoji😂😂😂 mixed with 中文标题 and more and more words here",
+            "Sample song title❤👈👰\u{200d}♀️👈 #song ❤❤ #love 👍👍👍 #trending",
+        ];
+        let mut t = midnight(d) + 9.0 * 3600.0;
+        for (i, title) in titles.iter().cycle().take(21).enumerate() {
+            let url = format!("https://video.example/watch?v={i}");
+            for app in ["firefox", "code"] {
+                st.con
+                    .execute(
+                        "INSERT INTO focus (ts, app, title, url) VALUES (?1, ?2, ?3, ?4)",
+                        rusqlite::params![t, app, title, if app == "firefox" { url.as_str() } else { "" }],
+                    )
+                    .unwrap();
+                t += 60.0;
+            }
+        }
+        st.con.execute("INSERT INTO focus (ts, app) VALUES (?1, '')", [t]).unwrap();
+        for (w, h) in SIZES {
+            for keys in [vec!['p'], vec!['4', '\u{1b}', 'j', '\n'], vec!['j', '\n']] {
+                let mut ui = new_ui();
+                ui.opener = no_open;
+                render(&st, &mut ui, w, h);
+                for k in keys {
+                    let input = match k {
+                        '\u{1b}' => Input::Esc,
+                        '\n' => Input::Enter,
+                        c => Input::Char(c),
+                    };
+                    handle(&st, &mut ui, input);
+                }
+                for _ in 0..25 {
+                    let f = render(&st, &mut ui, w, h); // asserts every line is exactly w cells wide
+                    let borders: Vec<usize> = f[2..h - 2]
+                        .iter()
+                        .filter(|l| strip_ansi(l).ends_with('│'))
+                        .map(|l| vlen(l))
+                        .collect();
+                    assert!(borders.iter().all(|b| *b == w), "{w}x{h}: right border out of line: {borders:?}");
+                    handle(&st, &mut ui, Input::Down);
+                }
+            }
+        }
+    }
+
     #[test]
     fn vim_keys() {
         set_tty(true);
