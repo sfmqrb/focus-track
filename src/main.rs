@@ -36,6 +36,8 @@ enum Cmd {
     Streaks,
     /// Days x hours grid of focused time (default 28 days)
     Heatmap,
+    /// The last year as a calendar, one dot per day, with streaks and months (-D for another range)
+    Year,
     /// Every window class seen, what it's shown as and its category
     Apps,
     /// Check that tracking works: daemon, gaps, idle/lock, audio, browsers, config
@@ -244,8 +246,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
         _ if a.json => {
-            let n = if matches!(a.command, Cmd::Week | Cmd::Heatmap) {
-                days.unwrap_or(7)
+            let n = if matches!(a.command, Cmd::Week | Cmd::Heatmap | Cmd::Year) {
+                days.unwrap_or(if a.command == Cmd::Year { 365 } else { 7 })
             } else {
                 1
             };
@@ -264,6 +266,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Dashboard => dashboard::run(&st, &mut dashboard::Ui::new(d, top, goal))?,
         Cmd::Week => single("week", |w| views::week_lines(&st, d, days.unwrap_or(7) as usize, top, w)),
         Cmd::Heatmap => single("heatmap", |w| views::heat_lines(&st, d, days.unwrap_or(28) as usize, w)),
+        Cmd::Year => single("year", |w| views::year_lines(&st, d, days.unwrap_or(365) as usize, w)),
         Cmd::Graph => single(&format!("activity · {}", views::day_label(d)), |w| {
             views::graph_lines(&st, d, w, 8, if a.apps { "apps" } else { "switches" }, None)
         }),

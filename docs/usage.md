@@ -7,6 +7,7 @@
 | `focus-track` | today: time per app, goal, trend vs. your usual |
 | `focus-track dashboard` | everything, live, full screen |
 | `focus-track week` · `heatmap` | the last days, stacked by app · hour by hour |
+| `focus-track year` | the last year as a calendar, one dot per day, with streaks and a bar per month (`-D 90` for 90 days) |
 | `focus-track timeline` · `streaks` · `graph` | minute by minute · longest stretches · app switching |
 | `focus-track pages` | websites with time and URL (`-s text` to filter) |
 | `focus-track apps` | every window class seen, its name and category |
@@ -29,7 +30,7 @@ Every list works the same way.
 | `/` | search the list as you type (apps, pages, windows); `⏎` keeps it, `esc` clears it |
 | `⏎` or click | open: an app's details, or a page in your browser |
 | `esc` | back one level (clears a search first; quits from the overview) |
-| `tab` · `1`–`7` · `p` | next panel · zoom a panel · pages |
+| `tab` · `1`–`8` · `p` | next panel · zoom a panel (`8`: the year) · pages |
 | `h` `l` / `←` `→` · `t` | previous / next day · today |
 | `c` · `m` | apps ↔ categories · activity graph mode |
 | `?` · `q` | help · quit |
@@ -41,7 +42,7 @@ Each symbol means one thing everywhere:
 | symbol | means |
 |---|---|
 | `■■■■■` | how much time (longer = more) |
-| `●●●··` | when you were there: one dot per minute (timeline) or hour (heatmap); `·` = nothing |
+| `●●●··` | when you were there: one dot per minute (timeline), hour (heatmap) or day (year); `·` = nothing |
 | `⣀⣤⣶⣿` | a trend through the day |
 | highlighted row | the selection |
 | `▲ ▼ –` | more / less / about your usual by this time of day |

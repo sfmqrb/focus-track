@@ -4,7 +4,7 @@ use crate::render::{DOT, EMPTY, app_code, braille_colored, color, dim, fit, high
 use crate::store::{Group, Row, Span, Store, daemon_running, merged, sum, switches, totals};
 use crate::track::{PRIVATE, is_browser, without_count};
 use crate::util::{day_bounds, days_before, fmt, hhmm, local, now, rhe, today};
-use chrono::{NaiveDate, Timelike};
+use chrono::{Datelike, NaiveDate, Timelike};
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
@@ -437,6 +437,145 @@ pub fn heat_lines(st: &Store, d: NaiveDate, days: usize, w: usize) -> Vec<String
     let key = th.heat.iter().map(|c| paint(c, DOT)).collect::<Vec<_>>().join(" ");
     lines.push(String::new());
     lines.push(dim("less ") + &paint(&th.border, EMPTY) + " " + &key + &dim(" more   one dot = one hour: <15m <30m <45m 45m+"));
+    lines
+}
+
+/// Seconds focused per calendar day in [first, last], read in one go.
+pub fn per_day(st: &Store, first: NaiveDate, last: NaiveDate) -> HashMap<NaiveDate, f64> {
+    let mut out: HashMap<NaiveDate, f64> = HashMap::new();
+    for (mut s, e, _) in st.by_group(day_bounds(first).0, day_bounds(last).1) {
+        while s < e {
+            let day = local(s).date_naive();
+            let next = e.min(day_bounds(day).1).max(s + 1e-6); // split spans at midnight
+            *out.entry(day).or_insert(0.0) += next.min(e) - s;
+            s = next;
+        }
+    }
+    out
+}
+
+/// Heat level of a day: <1h, <3h, <5h, 5h+.
+fn day_level(secs: f64) -> usize {
+    match secs / 3600.0 {
+        h if h < 1.0 => 0,
+        h if h < 3.0 => 1,
+        h if h < 5.0 => 2,
+        _ => 3,
+    }
+}
+
+/// The last `days` days as a calendar (weeks across, Mon-Sun down, one dot per day), then totals,
+/// streaks of tracked days and a bar per month.
+pub fn year_lines(st: &Store, d: NaiveDate, days: usize, w: usize) -> Vec<String> {
+    let th = theme();
+    let first = days_before(d, days.max(1) as i64 - 1);
+    let secs = per_day(st, first, d);
+    let week_start = |x: NaiveDate| days_before(x, i64::from(x.weekday().num_days_from_monday()));
+    let all_weeks = ((week_start(d) - week_start(first)).num_days() / 7 + 1) as usize;
+    let cw = if w >= 5 + all_weeks * 2 { 2 } else { 1 };
+    let weeks = all_weeks.min((w.saturating_sub(5) / cw).max(1)); // narrow terminals show the latest weeks
+    let grid_start = week_start(d) - chrono::Duration::weeks(weeks as i64 - 1);
+
+    let mut months = vec![' '; weeks * cw + 3];
+    let mut last_month = 0;
+    for wk in 0..weeks {
+        let monday = grid_start + chrono::Duration::weeks(wk as i64);
+        let sunday = monday + chrono::Duration::days(6);
+        if sunday.month() != last_month {
+            last_month = sunday.month();
+            let pos = wk * cw;
+            if months[pos.saturating_sub(1)..(pos + 4).min(months.len())].iter().all(|c| *c == ' ') {
+                for (k, ch) in sunday.format("%b").to_string().chars().enumerate() {
+                    months[pos + k] = ch;
+                }
+            }
+        }
+    }
+    let mut lines = vec![dim(&format!("    {}", months.iter().collect::<String>().trim_end()))];
+    for (dow, label) in ["Mon", "", "Wed", "", "Fri", "", "Sun"].iter().enumerate() {
+        let mut row = dim(&format!("{label:<3} "));
+        for wk in 0..weeks {
+            let day = grid_start + chrono::Duration::days(wk as i64 * 7 + dow as i64);
+            let pad = " ".repeat(cw - 1);
+            let cell = if day > d || day < first {
+                " ".to_string()
+            } else {
+                match secs.get(&day).copied().unwrap_or(0.0) {
+                    s if s < 60.0 => paint(&th.border, EMPTY),
+                    s => paint(&th.heat[day_level(s)], DOT),
+                }
+            };
+            row += &(cell + &pad);
+        }
+        lines.push(row);
+    }
+    let key = th.heat.iter().map(|c| paint(c, DOT)).collect::<Vec<_>>().join(" ");
+    lines.push(dim("    less ") + &paint(&th.border, EMPTY) + " " + &key + &dim(" more   one dot = one day: <1h <3h <5h 5h+"));
+    lines.push(String::new());
+
+    // totals and streaks over the whole range (not only the weeks that fit)
+    let range: Vec<NaiveDate> = (0..days as i64).rev().map(|i| days_before(d, i)).collect();
+    let tracked: Vec<&NaiveDate> = range.iter().filter(|x| secs.get(x).copied().unwrap_or(0.0) >= 60.0).collect();
+    let total: f64 = range.iter().map(|x| secs.get(x).copied().unwrap_or(0.0)).sum();
+    if tracked.is_empty() {
+        lines.push(dim("nothing tracked in this range"));
+        return lines;
+    }
+    let (best_day, best) = range
+        .iter()
+        .map(|x| (*x, secs.get(x).copied().unwrap_or(0.0)))
+        .fold((d, 0.0), |acc, x| if x.1 > acc.1 { x } else { acc });
+    let (mut longest, mut run) = (0, 0);
+    for x in &range {
+        run = if secs.get(x).copied().unwrap_or(0.0) >= 60.0 { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    // the current run may end yesterday: today isn't over yet
+    let current = range
+        .iter()
+        .rev()
+        .skip(usize::from(secs.get(&d).copied().unwrap_or(0.0) < 60.0 && d == today()))
+        .take_while(|x| secs.get(x).copied().unwrap_or(0.0) >= 60.0)
+        .count();
+    let strong = |x: &str| paint(&format!("1;{}", th.text), x);
+    lines.push(format!(
+        "{} {}   {} {}   {} {}",
+        strong(&fmt(total)),
+        dim(&format!("focused on {} of {} days", tracked.len(), days)),
+        strong(&fmt(total / tracked.len() as f64)),
+        dim("a tracked day"),
+        strong(&fmt(best)),
+        dim(&format!("best: {}", best_day.format("%a %d %b"))),
+    ));
+    lines.push(format!(
+        "{} {}   {} {}",
+        strong(&current.to_string()),
+        dim(if current == 1 { "day in a row now" } else { "days in a row now" }),
+        strong(&longest.to_string()),
+        dim("days longest run"),
+    ));
+    lines.push(String::new());
+
+    // a bar per month, newest last
+    let mut by_month: Vec<(NaiveDate, f64)> = Vec::new();
+    for x in &range {
+        let m = x.with_day(1).unwrap_or(*x);
+        let s = secs.get(x).copied().unwrap_or(0.0);
+        match by_month.last_mut() {
+            Some((mm, t)) if *mm == m => *t += s,
+            _ => by_month.push((m, s)),
+        }
+    }
+    let most = by_month.iter().map(|x| x.1).fold(0.0, f64::max).max(1.0);
+    let bar_w = w.saturating_sub(18).max(5);
+    for (m, s) in by_month.iter().rev().take(12).rev() {
+        lines.push(format!(
+            "{} {} {:>6}",
+            dim(&m.format("%b %Y").to_string()),
+            meter(s / most, bar_w, &th.accent),
+            fmt(*s)
+        ));
+    }
     lines
 }
 
@@ -970,6 +1109,58 @@ mod tests {
         // the bar widget: valid JSON, shares that add up
         let v: serde_json::Value = serde_json::from_str(&widget_json(&st)).unwrap();
         assert!(v["slices"].is_array() && v["tooltip"].as_str().is_some() && v["accent"].as_str().is_some_and(|a| a.starts_with('#')));
+    }
+
+    #[test]
+    fn year_calendar() {
+        set_tty(true);
+        let st = test_store("");
+        let d = days_before(today(), 1);
+        // three days in a row ending yesterday (1h, 4h, 6h), and a 2h day two weeks earlier
+        stint(&st, days_before(d, 2), 9.0, 10.0, "code", "", "");
+        stint(&st, days_before(d, 1), 9.0, 13.0, "code", "", "");
+        stint(&st, d, 9.0, 15.0, "code", "", "");
+        stint(&st, days_before(d, 14), 9.0, 11.0, "code", "", "");
+        let secs = per_day(&st, days_before(d, 30), d);
+        assert_eq!(secs.get(&d).copied(), Some(6.0 * 3600.0));
+        assert_eq!(secs.len(), 4);
+        let lines = year_lines(&st, d, 60, 110);
+        let t = plain(&lines);
+        let grid: String = t.lines().skip(1).take(7).collect();
+        assert_eq!(grid.matches(DOT).count(), 4, "one dot per tracked day: {t}");
+        assert!(
+            t.contains("13h00 focused on 4 of 60 days") && t.contains("3h15 a tracked day"),
+            "{t}"
+        );
+        assert!(t.contains("6h00 best: ") && t.contains(&d.format("%a %d %b").to_string()), "{t}");
+        assert!(t.contains("days in a row now") && t.contains("3 days longest run"), "{t}");
+        assert!(
+            t.lines().filter(|l| l.contains(&d.format("%b %Y").to_string())).count() == 1,
+            "a bar per month: {t}"
+        );
+        assert!(lines.iter().all(|l| vlen(l) <= 110));
+        // levels: <1h, <3h, <5h, 5h+
+        assert_eq!([0.5, 2.0, 4.0, 6.0].map(|h| day_level(h * 3600.0)), [0, 1, 2, 3]);
+        // narrow terminals show the latest weeks instead of overflowing
+        // (longer text lines are cut by the panel's box; the grid itself must shrink)
+        for w in [20, 40, 60, 200] {
+            let grid = year_lines(&st, d, 365, w);
+            assert!(
+                grid[1..8].iter().all(|l| vlen(l) <= w.max(6)),
+                "{w}: {:?}",
+                grid[1..8].iter().map(|l| vlen(l)).collect::<Vec<_>>()
+            );
+            assert!(plain(&grid[1..8]).contains(DOT), "{w}: the latest days are always visible");
+        }
+        // a day that crosses midnight is split between the two days
+        let st = test_store("");
+        stint(&st, days_before(d, 1), 23.0, 25.0, "code", "", "");
+        let secs = per_day(&st, days_before(d, 1), d);
+        assert_eq!(
+            (secs.get(&days_before(d, 1)).copied(), secs.get(&d).copied()),
+            (Some(3600.0), Some(3600.0))
+        );
+        assert!(plain(&year_lines(&test_store(""), d, 30, 80)).contains("nothing tracked in this range"));
     }
 
     #[test]

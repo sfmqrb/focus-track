@@ -13,8 +13,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseBu
 use std::io::Write;
 use std::time::Duration;
 
-pub const PANELS: [&str; 7] = ["today", "streaks", "activity", "timeline", "week", "heatmap", "pages"];
-const SUP: [&str; 7] = ["¹", "²", "³", "⁴", "⁵", "⁶", "⁷"];
+pub const PANELS: [&str; 8] = ["today", "streaks", "activity", "timeline", "week", "heatmap", "pages", "year"];
+const SUP: [&str; 8] = ["¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸"];
 type Rect = (usize, usize, usize, usize); // x, y, w, h
 const CHROME: usize = 2; // header bar + key bar
 pub const MIN_W: usize = 60;
@@ -224,6 +224,7 @@ fn panel(st: &Store, ui: &mut Ui, name: &str, w: usize, h: Option<usize>) -> (St
             "heatmap".into(),
             views::heat_lines(st, d, h.map_or(7, |h| h.saturating_sub(3).max(7)), w),
         ),
+        "year" => ("year".into(), views::year_lines(st, d, 365, w)),
         _ => {
             let (s, e) = day_bounds(d);
             let sel = h.map(|_| ui.page_sel); // only the zoomed pages panel is selectable
@@ -332,7 +333,7 @@ fn key_bar(ui: &Ui, w: usize) -> String {
                 ("⏎", "details"),
                 ("/", "search"),
                 ("tab", "panel"),
-                ("1-7", "zoom"),
+                ("1-8", "zoom"),
                 ("←→", "day"),
                 ("c", "categories"),
                 ("m", "graph"),
@@ -360,7 +361,7 @@ fn help_lines() -> Vec<String> {
         String::new(),
         dim("views"),
         k("tab  S-tab", "next / previous panel"),
-        k("1 … 7", "zoom a panel full screen (or click its title)"),
+        k("1 … 8", "zoom a panel full screen (8: the year, one dot per day)"),
         k("p", "pages you visited"),
         k("← →  h l  t", "previous / next day, today (or the mouse wheel over a panel)"),
         k("c", "group by app or by category (categories are set in the config)"),
@@ -763,7 +764,7 @@ fn handle_input(st: &Store, ui: &mut Ui, input: Input) -> bool {
             }
         }
         Input::Enter => enter(st, ui),
-        Input::Char(c @ '1'..='7') if ui.detail.is_none() => ui.zoom_to(PANELS[c as usize - '1' as usize]),
+        Input::Char(c @ '1'..='8') if ui.detail.is_none() => ui.zoom_to(PANELS[c as usize - '1' as usize]),
         Input::Char('p') if ui.detail.is_none() => ui.zoom_to("pages"),
         Input::Char('m') => ui.graph = if ui.graph == "switches" { "apps" } else { "switches" },
         Input::Char('c') if ui.detail.is_none() => {
@@ -1377,6 +1378,7 @@ mod tests {
                 Some('5'),
                 Some('6'),
                 Some('7'),
+                Some('8'),
                 Some('?'),
             ] {
                 let mut ui = new_ui();
@@ -1396,7 +1398,7 @@ mod tests {
                     let blank = f.iter().rev().skip(1).take_while(|l| strip_ansi(l).trim().is_empty()).count();
                     assert!(blank < 6, "{w}x{h}: {blank} empty lines at the bottom of the overview");
                 }
-                if key == Some('4') || key == Some('6') {
+                if key == Some('4') || key == Some('6') || key == Some('8') {
                     assert!(t.contains(DOT), "{w}x{h}: time grids are made of dots");
                 }
             }
@@ -1409,7 +1411,7 @@ mod tests {
         let st = stress_store(yesterday());
         let bar = |ui: &mut Ui| strip_ansi(render(&st, ui, 120, 42).last().unwrap());
         let mut ui = new_ui();
-        assert!(bar(&mut ui).contains("1-7 zoom"));
+        assert!(bar(&mut ui).contains("1-8 zoom"));
         handle(&st, &mut ui, Input::Char('p'));
         assert!(bar(&mut ui).contains("open in browser"));
         handle(&st, &mut ui, Input::Esc);
@@ -1430,7 +1432,7 @@ mod tests {
             assert_eq!(unicode_width::UnicodeWidthStr::width(bar.as_str()), w);
         }
         assert!(
-            strip_ansi(&key_bar(&new_ui(), 200)).contains("1-7 zoom"),
+            strip_ansi(&key_bar(&new_ui(), 200)).contains("1-8 zoom"),
             "wide terminals show everything"
         );
     }
@@ -1489,7 +1491,17 @@ mod tests {
         handle(&st, &mut ui, Input::Char('c'));
         assert_eq!(st.group.get(), Group::Category);
         for (w, h) in SIZES {
-            for z in [None, Some('1'), Some('2'), Some('3'), Some('4'), Some('5'), Some('6'), Some('7')] {
+            for z in [
+                None,
+                Some('1'),
+                Some('2'),
+                Some('3'),
+                Some('4'),
+                Some('5'),
+                Some('6'),
+                Some('7'),
+                Some('8'),
+            ] {
                 let mut ui = new_ui();
                 render(&st, &mut ui, w, h);
                 if let Some(z) = z {
