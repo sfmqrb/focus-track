@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const STARTER: &str = r#"# focus-track config: renames and categories apply to all history, edits show up immediately.
 # See what's there with:  focus-track apps
@@ -19,6 +19,11 @@ pub const STARTER: &str = r#"# focus-track config: renames and categories apply 
 # database lives. Chromium-style "History" and Firefox-style "places.sqlite" files both work. Globs work.
 # [browsers]
 # "my-browser*" = "~/.config/my-browser/*/History"
+
+# Steam games are named after the game automatically. Only if a library folder isn't listed in Steam's own
+# libraryfolders.vdf:
+# [steam]
+# libraries = ["/mnt/games/SteamLibrary"]
 
 # Categories. `apps` match names or classes (globs work); `sites` match the page URL of browser time
 # and win over apps, so YouTube in a "work" browser still counts as media. Everything else is "other".
@@ -46,6 +51,8 @@ pub struct Config {
     pub categories: Vec<Category>,
     /// class glob -> history database glob, for browsers focus-track doesn't know
     pub browsers: Vec<(String, String)>,
+    /// extra Steam library folders (besides the ones Steam lists itself)
+    pub steam_libraries: Vec<PathBuf>,
     name_cache: RefCell<HashMap<String, String>>,
     cat_cache: RefCell<HashMap<(String, String), String>>,
 }
@@ -79,6 +86,7 @@ impl Config {
                     cfg.names.clear();
                     cfg.categories.clear();
                     cfg.browsers.clear();
+                    cfg.steam_libraries.clear();
                 }
             }
         }
@@ -103,6 +111,15 @@ impl Config {
             for (k, v) in names {
                 let v = v.as_str().ok_or(format!("names.\"{k}\" must be a string"))?;
                 self.names.push((k.clone(), crate::util::sanitize(v)));
+            }
+        }
+        if let Some(steam) = table.get("steam") {
+            let steam = steam.as_table().ok_or("[steam] must be a table")?;
+            if let Some(libs) = steam.get("libraries") {
+                for l in libs.as_array().ok_or("steam.libraries must be a list")? {
+                    let l = l.as_str().ok_or("steam.libraries must hold paths")?;
+                    self.steam_libraries.push(crate::util::expand_home(l));
+                }
             }
         }
         if let Some(bs) = table.get("browsers") {
@@ -147,7 +164,13 @@ impl Config {
             return n.clone();
         }
         let n = self.names.iter().find(|(p, _)| glob_match(p, app)).map_or_else(
-            || webapp_host(app).map_or_else(|| short(app), |h| webapp_name(&h)),
+            || {
+                if let Some(id) = steam_app_id(app) {
+                    steam_game_name(&steam_libraries(&self.steam_libraries), id).unwrap_or_else(|| format!("Steam game {id}"))
+                } else {
+                    webapp_host(app).map_or_else(|| short(app), |h| webapp_name(&h))
+                }
+            },
             |(_, n)| n.clone(),
         );
         self.name_cache.borrow_mut().insert(app.to_string(), n.clone());
@@ -214,6 +237,96 @@ pub fn glob_match(pattern: &str, s: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
+}
+
+/// `steam_app_123456` -> `123456`: the window class Steam gives every game it launches.
+pub fn steam_app_id(app: &str) -> Option<&str> {
+    let id = app.strip_prefix("steam_app_")?;
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+}
+
+/// The quoted strings on one line of a Valve KeyValues (.vdf/.acf) file, unescaped.
+fn vdf_strings(line: &str) -> Vec<String> {
+    let (mut out, mut cur, mut open, mut esc) = (Vec::new(), String::new(), false, false);
+    for c in line.chars() {
+        match (open, esc, c) {
+            (true, true, c) => {
+                cur.push(match c {
+                    'n' => ' ',
+                    't' => ' ',
+                    c => c,
+                });
+                esc = false;
+            }
+            (true, false, '\\') => esc = true,
+            (true, false, '"') => {
+                out.push(std::mem::take(&mut cur));
+                open = false;
+            }
+            (true, false, c) => cur.push(c),
+            (false, _, '"') => open = true,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Value of the first `"key" "value"` line with this key.
+fn vdf_value(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|l| match vdf_strings(l).as_slice() {
+        [k, v, ..] if k.eq_ignore_ascii_case(key) => Some(v.clone()),
+        _ => None,
+    })
+}
+
+/// Every `steamapps` folder that could hold game manifests: Steam's own (regular, Flatpak, older layouts),
+/// the libraries Steam lists in libraryfolders.vdf, and the ones in your config.
+pub fn steam_libraries(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let home = crate::util::home();
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| home.join(".local/share"), PathBuf::from);
+    let mut roots = vec![
+        data.join("Steam"),
+        home.join(".steam/steam"),
+        home.join(".steam/root"),
+        home.join(".steam/debian-installation"),
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+    ];
+    let mut out: Vec<PathBuf> = Vec::new();
+    let add = |p: PathBuf, out: &mut Vec<PathBuf>| {
+        let p = std::fs::canonicalize(&p).unwrap_or(p);
+        if p.is_dir() && !out.contains(&p) {
+            out.push(p);
+        }
+    };
+    for root in roots.drain(..) {
+        let apps = root.join("steamapps");
+        if let Ok(list) = std::fs::read_to_string(apps.join("libraryfolders.vdf")) {
+            for line in list.lines() {
+                if let [k, v, ..] = vdf_strings(line).as_slice() {
+                    if k == "path" {
+                        add(PathBuf::from(v).join("steamapps"), &mut out);
+                    }
+                }
+            }
+        }
+        add(apps, &mut out);
+    }
+    for e in extra {
+        add(if e.ends_with("steamapps") { e.clone() } else { e.join("steamapps") }, &mut out);
+    }
+    out
+}
+
+/// The name of an installed Steam game, from its local `appmanifest_<id>.acf` (nothing is fetched).
+pub fn steam_game_name(libraries: &[PathBuf], id: &str) -> Option<String> {
+    libraries.iter().find_map(|lib: &PathBuf| {
+        let text = std::fs::read_to_string(Path::new(lib).join(format!("appmanifest_{id}.acf"))).ok()?;
+        vdf_value(&text, "name")
+            .map(|n| crate::util::display_text(&n))
+            .filter(|n| !n.trim().is_empty())
+    })
 }
 
 /// The site of a Chromium app-mode window (Omarchy web apps): `chrome-discord.com__channels_@me-Default` -> `discord.com`.
@@ -309,6 +422,102 @@ mod tests {
         assert_eq!(cfg.category_of("chromium", "https://github.com"), "work");
         assert_eq!(cfg.category_of("imv", ""), "other");
         assert_eq!(cfg.category_of("mpv", ""), "media");
+    }
+
+    #[test]
+    fn steam_games_are_named_after_the_game() {
+        assert_eq!(steam_app_id("steam_app_123456"), Some("123456"));
+        for no in [
+            "steam",
+            "steam_app_",
+            "steam_app_12x",
+            "Steam_app_1",
+            "steam_proton",
+            "steam_app_1/../2",
+        ] {
+            assert_eq!(steam_app_id(no), None, "{no}");
+        }
+        assert_eq!(
+            vdf_strings(r#"		"name"		"Example Game: Deluxe Edition""#),
+            ["name", "Example Game: Deluxe Edition"]
+        );
+        assert_eq!(vdf_strings(r#""name" "Say \"hi\" \\ there""#), ["name", r#"Say "hi" \ there"#]);
+        assert_eq!(
+            vdf_value(
+                "\"AppState\"\n{\n\t\"appid\"\t\t\"5\"\n\t\"name\"\t\t\"First\"\n\t\"name\"\t\"Second\"\n}",
+                "name"
+            )
+            .as_deref(),
+            Some("First")
+        );
+
+        let dir = std::env::temp_dir().join(format!("focus-track-steam-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (main, games) = (dir.join("Steam/steamapps"), dir.join("Games/SteamLibrary/steamapps"));
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(
+            main.join("appmanifest_10.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\"10\"\n\t\"name\"\t\"Counter Game\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            games.join("appmanifest_20.acf"),
+            "\"AppState\"\n{\n\t\"name\"\t\"Game On Another Drive\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            games.join("appmanifest_30.acf"),
+            "\"AppState\"\n{\n\t\"name\"\t\"\u{202e}\u{200e}  \"\n}\n",
+        )
+        .unwrap();
+        let libs = [main.clone(), games.clone()];
+        assert_eq!(steam_game_name(&libs, "10").as_deref(), Some("Counter Game"));
+        assert_eq!(
+            steam_game_name(&libs, "20").as_deref(),
+            Some("Game On Another Drive"),
+            "found in a second library"
+        );
+        assert_eq!(steam_game_name(&libs, "30"), None, "an empty name is no name");
+        assert_eq!(steam_game_name(&libs, "99"), None);
+        assert_eq!(
+            steam_game_name(&libs, "../10"),
+            None,
+            "ids are digits only, but the lookup is safe anyway"
+        );
+        // library folders come from steam's own list and from the config
+        std::fs::write(
+            dir.join("Steam/steamapps/libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}\n",
+                dir.join("Games/SteamLibrary").display()
+            ),
+        )
+        .unwrap();
+        let mut cfg = Config::from_str("[steam]\nlibraries = [\"/nonexistent/place\"]").unwrap();
+        assert_eq!(cfg.steam_libraries, [PathBuf::from("/nonexistent/place")]);
+        cfg.steam_libraries = vec![dir.join("Games/SteamLibrary")];
+        assert!(
+            steam_libraries(&cfg.steam_libraries).contains(&std::fs::canonicalize(&games).unwrap()),
+            "extra libraries are searched"
+        );
+        assert_eq!(
+            cfg.name_of("steam_app_20"),
+            "Game On Another Drive",
+            "found through the library from the config"
+        );
+        assert_eq!(
+            cfg.name_of("steam_app_99"),
+            "Steam game 99",
+            "an unknown game falls back to a readable name, never the raw class"
+        );
+        // rules: your own rename wins, and the class glob puts every game in one category
+        let cfg =
+            Config::from_str("[names]\n\"steam_app_7\" = \"My Game\"\n[categories.games]\napps = [\"steam_app_*\", \"steam\"]").unwrap();
+        assert_eq!(cfg.name_of("steam_app_7"), "My Game");
+        assert_eq!(cfg.category_of("steam_app_123456", ""), "games");
+        assert_eq!(cfg.category_of("steam", ""), "games");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

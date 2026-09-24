@@ -25,6 +25,21 @@ shows as **Discord**, `chrome-mail.example.org__…` as **Example Mail**, and di
 `[names]` rules still win. Their site also counts for `sites`, so `sites = ["discord.com"]` catches the Discord app too.
 Unread counters in titles, like `(230) Discord | Friends`, are ignored so one page isn't split into many rows.
 
+## Steam games
+
+A game launched from Steam has a window class like `steam_app_123456`. focus-track shows it under the game's real
+name, read from Steam's own local files (`appmanifest_<id>.acf` in your Steam library folders, including extra
+libraries Steam lists and Flatpak installs). Nothing is looked up online. A game whose files can't be found shows as
+`Steam game 123456`. Rename it with `[names]`, and put every Steam game in a category with one rule:
+
+```toml
+[categories.games]
+apps = ["steam_app_*", "steam"]      # all games, and the Steam client itself
+
+[steam]                               # only if a library isn't one Steam lists itself
+libraries = ["/mnt/games/SteamLibrary"]
+```
+
 ## Browsers
 
 focus-track recognizes Chromium, Chrome, Brave, Vivaldi, Edge, Opera, Firefox, LibreWolf, Zen, Floorp and Waterfox,
