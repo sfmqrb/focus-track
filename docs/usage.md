@@ -43,6 +43,7 @@ Each symbol means one thing everywhere:
 |---|---|
 | `■■■■■` | how much time (longer = more) |
 | `●●●··` | when you were there: one dot per minute (timeline), hour (heatmap) or day (year); `·` = nothing |
+| a cell's color | whichever app you spent the most time on within that dot's slice of time |
 | `⣀⣤⣶⣿` | a trend through the day |
 | highlighted row | the selection |
 | `▲ ▼ –` | more / less / about your usual by this time of day |

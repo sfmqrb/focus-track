@@ -210,8 +210,10 @@ fn panel(st: &Store, ui: &mut Ui, name: &str, w: usize, h: Option<usize>) -> (St
             views::graph_lines(st, d, w, h.map_or(5, |h| h.saturating_sub(2).max(3)), ui.graph, None),
         ),
         "timeline" => {
+            // the same top-N as everywhere else: zooming must not recolor cells by suddenly giving
+            // more (or fewer) apps their own color instead of the shared "other" gray
             let lines = match h {
-                Some(h) => views::timeline_lines(st, d, 12, w, Some(h), Some(&mut ui.pg_timeline)),
+                Some(h) => views::timeline_lines(st, d, ui.top, w, Some(h), Some(&mut ui.pg_timeline)),
                 None => views::timeline_lines(st, d, ui.top, w, None, None),
             };
             ("timeline".into(), lines)
@@ -1511,6 +1513,23 @@ mod tests {
         assert_eq!(ui.focus, "heatmap");
         handle(&st, &mut ui, Input::Enter);
         assert_eq!(ui.zoom, Some("heatmap"), "⏎ on a panel zooms it");
+    }
+
+    #[test]
+    fn timeline_legend_is_the_same_zoomed_or_not() {
+        // panel("timeline", ...) used to pass a different top-N depending on whether it's zoomed (a
+        // hardcoded 12) or not (ui.top), so an app just inside one cutoff and outside the other flipped
+        // between its own color and dim "other" purely from pressing 4
+        set_tty(true);
+        let st = stress_store(yesterday());
+        let mut ui = new_ui();
+        frame(&st, &mut ui, 160, 54); // populate ui.apps etc.
+        let (_, unzoomed) = panel(&st, &mut ui, "timeline", 150, None);
+        let (_, zoomed) = panel(&st, &mut ui, "timeline", 150, Some(30));
+        let legend = |lines: &[String]| lines.last().map(|l| strip_ansi(l)).unwrap_or_default();
+        let (a, b) = (legend(&unzoomed), legend(&zoomed));
+        assert!(a.contains("app00"), "expected a legend naming app00: {a:?}");
+        assert_eq!(a, b, "the timeline legend (and so its colors) changed just from zooming in");
     }
 
     #[test]

@@ -265,6 +265,43 @@ pub fn streak_lines(st: &Store, d: NaiveDate, top: usize, w: usize) -> Vec<Strin
 }
 
 /// Zoomed (cap + pager): the hour rows scroll inside `cap` lines; otherwise every hour is returned.
+/// Which app occupies most of each `per`-minute cell in [start, start + n*per*60), given `sp` (time-ordered,
+/// non-overlapping spans): a cell's color is whichever app has the most time in it, not whichever span
+/// happens to touch it last. A cell can span more than one app (a brief distraction near its edge, or any
+/// switch at all when granularity is coarser than a minute); "last span wins" picked whichever the query
+/// happened to return last for that cell, so as new rows arrived near "now" (a heartbeat, a quick switch),
+/// a cell's color could flip to an app that only briefly touched it. Ties keep whichever app was in the
+/// cell first, so the result never depends on iteration order.
+fn dominant_per_cell(sp: &[Span], start: f64, per: usize, n: usize) -> Vec<Option<&str>> {
+    let cell_len = 60.0 * per as f64;
+    let mut weight: Vec<Vec<(&str, f64)>> = vec![Vec::new(); n];
+    for (s, e, app) in sp {
+        let lo = ((s - start) / cell_len).max(0.0) as usize;
+        let hi = (((e - start - 1e-6) / cell_len).max(0.0) as usize).min(n.saturating_sub(1));
+        for (i, cell) in weight.iter_mut().enumerate().take(hi + 1).skip(lo) {
+            let overlap = (e.min(start + (i + 1) as f64 * cell_len) - s.max(start + i as f64 * cell_len)).max(0.0);
+            if overlap <= 0.0 {
+                continue;
+            }
+            match cell.iter_mut().find(|(a, _)| a == app) {
+                Some((_, w)) => *w += overlap,
+                None => cell.push((app.as_str(), overlap)),
+            }
+        }
+    }
+    weight
+        .into_iter()
+        .map(|cell| {
+            cell.into_iter()
+                .fold(None, |best: Option<(&str, f64)>, (a, w)| match best {
+                    Some((_, bw)) if bw >= w => best,
+                    _ => Some((a, w)),
+                })
+                .map(|(a, _)| a)
+        })
+        .collect()
+}
+
 pub fn timeline_lines(st: &Store, d: NaiveDate, top: usize, w: usize, cap: Option<usize>, pager: Option<&mut Pager>) -> Vec<String> {
     let th = theme();
     let (start, end) = day_bounds(d);
@@ -281,14 +318,8 @@ pub fn timeline_lines(st: &Store, d: NaiveDate, top: usize, w: usize, cap: Optio
     let row = 60 / per;
     let cw = (w.saturating_sub(3) / row).max(1); // stretch cells to fill the box
     let slots = ((end - start) / 60.0 / per as f64).ceil() as usize; // 23 or 25 hours on DST days
-    let mut cells: Vec<Option<&str>> = vec![None; slots.max(24 * row)];
-    for (s, e, app) in &sp {
-        let lo = ((s - start) / (60.0 * per as f64)) as usize;
-        let hi = ((e - start - 1.0) / (60.0 * per as f64)).max(0.0) as usize;
-        for c in cells.iter_mut().take(hi + 1).skip(lo) {
-            *c = Some(app);
-        }
-    }
+    let n = slots.max(24 * row);
+    let cells = dominant_per_cell(&sp, start, per, n);
     let mut ruler = vec![' '; row * cw];
     for m in [0, 15, 30, 45] {
         for (k, ch) in format!(":{m:02}").chars().enumerate() {
@@ -1201,5 +1232,28 @@ mod tests {
         let f = strip_ansi(&footer.unwrap());
         assert!(f.contains("above") && !f.contains("more"));
         assert_eq!(Pager::default().view(&items[..5], 8, None), (items[..5].to_vec(), None));
+    }
+
+    #[test]
+    fn timeline_cell_picks_the_app_with_most_time_not_the_last_span() {
+        // one minute cell, split between two apps: 50s of "a" then 10s of "b" -- "a" must win, even though
+        // "b" is the span the query returns last for this cell (this used to flip the cell to "b")
+        let sp: Vec<Span> = vec![(0.0, 50.0, "a".into()), (50.0, 60.0, "b".into())];
+        assert_eq!(dominant_per_cell(&sp, 0.0, 1, 1), vec![Some("a")]);
+        // the same data reversed in a nonsense insertion order must give the same answer: never order-dependent
+        let reversed: Vec<Span> = vec![(50.0, 60.0, "b".into()), (0.0, 50.0, "a".into())];
+        assert_eq!(dominant_per_cell(&reversed, 0.0, 1, 1), vec![Some("a")]);
+        // exactly tied: the app that was in the cell first keeps it, every time (no hash-map randomness)
+        let tied: Vec<Span> = vec![(0.0, 30.0, "a".into()), (30.0, 60.0, "b".into())];
+        for _ in 0..20 {
+            assert_eq!(dominant_per_cell(&tied, 0.0, 1, 1), vec![Some("a")]);
+        }
+        // a span split across two cells only counts the seconds actually inside each one
+        let spanning: Vec<Span> = vec![(50.0, 130.0, "x".into())]; // 10s in cell 0, 60s in cell 1, 10s in cell 2
+        assert_eq!(dominant_per_cell(&spanning, 0.0, 1, 3), vec![Some("x"), Some("x"), Some("x")]);
+        // an empty cell (nothing focused) stays empty
+        assert_eq!(dominant_per_cell(&[], 0.0, 1, 2), vec![None, None]);
+        let gap: Vec<Span> = vec![(0.0, 10.0, "a".into())];
+        assert_eq!(dominant_per_cell(&gap, 0.0, 1, 2), vec![Some("a"), None]);
     }
 }
